@@ -1,0 +1,9 @@
+{
+  "id": "steady-reader",
+  "name": "Steady",
+  "version": "1.0.0",
+  "minAppVersion": "1.4.0",
+  "description": "Read the current note, a selection or a PDF in Steady, the local voice-guided reader.",
+  "author": "Steady",
+  "isDesktopOnly": true
+}

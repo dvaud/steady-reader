@@ -1,0 +1,19 @@
+[project]
+name = "steady-reader"
+version = "0.1.0"
+description = "A local, voice-guided reader: one word at a time, while you hold space."
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "flask>=3.0",
+    "piper-tts>=1.8",
+    "onnx>=1.16",
+    "pymupdf>=1.24",
+    "mammoth>=1.8",
+    "trafilatura>=2.0",
+    "beautifulsoup4>=4.12",
+    "markdown>=3.5",
+    "numpy",
+]
+
+[tool.uv]
+package = false

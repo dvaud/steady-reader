@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Steady</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='5' y='12' width='22' height='9' rx='4.5' fill='%237d8cf0' opacity='.45'/><rect x='5' y='5' width='14' height='3' rx='1.5' fill='%23999'/><rect x='5' y='25' width='18' height='3' rx='1.5' fill='%23999'/></svg>">
+  <link rel="stylesheet" href="/static/style.css">
+  <!-- For Safari's File > Add to Dock: Steady in its own window, with its own icon -->
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/static/icon-180.png">
+  <meta name="apple-mobile-web-app-title" content="Steady">
+  <meta name="theme-color" content="#f7f5f0">
+</head>
+<body>
+
+<!-- Library -->
+<section id="library" class="screen">
+  <button id="quit" class="quit" title="Stop Steady">Quit</button>
+  <main class="lib">
+    <h1 class="brand">Steady</h1>
+    <p class="tagline">Read with your eyes and ears.</p>
+
+    <label id="drop" class="drop">
+      <input id="fileInput" type="file" accept=".pdf,.docx,.html,.htm,.xhtml,.md,.markdown,.txt,.text" hidden>
+      <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true"><path d="M7 3h7l5 5v11a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z M14 3v5h5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M9 13h6M9 16.5h4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+      <span class="drop-title">Drop a file, or click to choose</span>
+      <span class="drop-sub">PDF · Word · HTML · Markdown · Text</span>
+    </label>
+
+    <form id="urlForm" class="url" autocomplete="off">
+      <input id="urlInput" type="text" placeholder="…or paste a link, or any text" spellcheck="false">
+    </form>
+
+    <div id="libStatus" class="lib-status" role="status"></div>
+    <details id="allMarks" class="all-marks" hidden>
+      <summary>Bookmarks <span id="allMarksCount"></span></summary>
+      <ul id="allMarksList"></ul>
+    </details>
+    <div id="libSort" class="lib-sort" hidden>
+      <button data-sort="recent">Recent</button><span>·</span><button data-sort="source">Source</button>
+    </div>
+    <ul id="docs" class="docs"></ul>
+  </main>
+</section>
+
+<!-- Reader -->
+<section id="reader" class="screen" hidden>
+  <header id="bar" class="bar">
+    <button id="back" class="icon-btn" title="Library (Esc)" aria-label="Back to library">
+      <svg viewBox="0 0 24 24" width="20" height="20"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <button id="docTitle" class="doc-title" title="Contents and bookmarks (O)"></button>
+    <button id="langChip" class="chip" title="Language and voice"></button>
+    <button id="rateChip" class="chip" aria-describedby="rateTip"></button>
+    <button id="settingsBtn" class="icon-btn" title="Settings" aria-label="Settings"><span class="aa">Aa</span></button>
+  </header>
+
+  <div id="stage" class="stage">
+    <article id="doc" class="doc"><div id="cursor"></div><div id="blocks"></div></article>
+  </div>
+
+  <footer class="foot">
+    <button id="hold" class="hold" title="Hold to read">
+      <span id="hintText">Hold <kbd>space</kbd> to read · double-tap to lock</span>
+    </button>
+    <div class="keys">← → sentence &nbsp;·&nbsp; ↑ ↓ paragraph &nbsp;·&nbsp; O contents &nbsp;·&nbsp; B bookmark &nbsp;·&nbsp; hold Shift left / right: slower / faster &nbsp;·&nbsp; M mute &nbsp;·&nbsp; click a word to jump</div>
+  </footer>
+  <div class="progress"><div id="progressFill"></div></div>
+
+  <div id="rateTip" class="tip" role="tooltip" hidden></div>
+  <form id="search" class="search" role="search" autocomplete="off" hidden>
+    <input id="searchInput" type="text" placeholder="Search" spellcheck="false" aria-label="Search in document">
+    <span id="searchCount"></span>
+    <button type="button" id="searchPrev" title="Previous (Shift+Enter)" aria-label="Previous match">↑</button>
+    <button type="button" id="searchNext" title="Next (Enter)" aria-label="Next match">↓</button>
+    <button type="button" id="searchClose" title="Close (Esc)" aria-label="Close search">×</button>
+  </form>
+  <nav id="outline" class="panel outline" hidden></nav>
+  <div id="selPop" class="sel-pop" role="toolbar" hidden>
+    <button data-act="copy">Copy</button><button data-act="mark">Bookmark</button>
+  </div>
+
+  <div id="panel" class="panel" hidden>
+    <div class="row">
+      <label>Language</label>
+      <select id="langSelect"></select>
+    </div>
+    <div class="row">
+      <label>Voice</label>
+      <select id="voiceSelect"></select>
+    </div>
+    <div class="row">
+      <label>Speed <span id="rateVal" class="val"></span></label>
+      <input id="rateInput" type="range" min="0.5" max="4" step="0.05">
+    </div>
+    <div class="row">
+      <label>Sound</label>
+      <div class="seg" data-setting="muted">
+        <button data-v="false">On</button><button data-v="true">Muted</button>
+      </div>
+    </div>
+    <hr>
+    <div class="row">
+      <label>Theme</label>
+      <div class="seg" data-setting="theme">
+        <button data-v="auto">Auto</button><button data-v="light">Light</button><button data-v="sepia">Sepia</button><button data-v="dark">Dark</button>
+      </div>
+    </div>
+    <div class="row">
+      <label>Focus</label>
+      <div class="seg" data-setting="focus">
+        <button data-v="line">Line</button><button data-v="paragraph">Paragraph</button>
+      </div>
+    </div>
+    <div class="row">
+      <label>Guide</label>
+      <div class="seg" data-setting="guide">
+        <button data-v="reveal">Reveal</button><button data-v="highlight">Highlight</button>
+      </div>
+    </div>
+    <div class="row">
+      <label>Font</label>
+      <div class="seg" data-setting="font">
+        <button data-v="serif">Serif</button><button data-v="sans">Sans</button>
+      </div>
+    </div>
+    <div class="row">
+      <label>Size</label>
+      <div class="stepper">
+        <button id="sizeDown" aria-label="Smaller">−</button><span id="sizeVal"></span><button id="sizeUp" aria-label="Larger">+</button>
+      </div>
+    </div>
+    <div class="row">
+      <label>Width</label>
+      <div class="seg" data-setting="width">
+        <button data-v="narrow">Narrow</button><button data-v="medium">Medium</button><button data-v="wide">Wide</button>
+      </div>
+    </div>
+    <hr>
+    <details id="pron" class="pron">
+      <summary>Pronunciations <span id="pronCount" class="val"></span></summary>
+      <ul id="pronList"></ul>
+      <form id="pronForm" autocomplete="off">
+        <input id="pronWord" placeholder="Word" spellcheck="false">
+        <input id="pronSay" placeholder="Say it as" spellcheck="false">
+        <button type="button" id="pronTry" title="Listen">▶</button>
+        <button type="submit" title="Save">Add</button>
+      </form>
+      <p class="notes">For the current language. Write it how it sounds, like “Vay-bair-ian”. Option-click (Alt-click) a word in the text to add it here.</p>
+    </details>
+    <p id="docNotes" class="notes"></p>
+  </div>
+</section>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,80 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "steady",
+  "title": "Steady",
+  "description": "Read selected text, the clipboard, a web page or a file in Steady, the local voice-guided reader.",
+  "icon": "icon.png",
+  "author": "steady",
+  "platforms": ["macOS"],
+  "categories": ["Productivity"],
+  "license": "MIT",
+  "commands": [
+    {
+      "name": "read-selection",
+      "title": "Read Selection in Steady",
+      "description": "Read the text selected in any app in Steady.",
+      "mode": "no-view"
+    },
+    {
+      "name": "read-clipboard",
+      "title": "Read Clipboard in Steady",
+      "description": "Read the copied text, link or file in Steady.",
+      "mode": "no-view"
+    },
+    {
+      "name": "read-browser-tab",
+      "title": "Read Browser Tab in Steady",
+      "description": "Read the web page open in your browser in Steady.",
+      "mode": "no-view"
+    },
+    {
+      "name": "read-finder-files",
+      "title": "Read Finder Selection in Steady",
+      "description": "Read the files selected in Finder in Steady.",
+      "mode": "no-view"
+    },
+    {
+      "name": "library",
+      "title": "Search Steady Library",
+      "description": "Find a document in Steady and carry on reading.",
+      "mode": "view"
+    },
+    {
+      "name": "bookmarks",
+      "title": "Search Steady Bookmarks",
+      "description": "Find a bookmark and read from there.",
+      "mode": "view"
+    }
+  ],
+  "preferences": [
+    {
+      "name": "url",
+      "title": "Steady Address",
+      "description": "Where Steady runs.",
+      "type": "textfield",
+      "required": false,
+      "default": "http://localhost:8765"
+    },
+    {
+      "name": "app",
+      "title": "Steady App",
+      "description": "Started when Steady isn't running: a name (Steady) or a full path, like /Applications/Steady.app.",
+      "type": "textfield",
+      "required": false,
+      "default": "Steady"
+    }
+  ],
+  "dependencies": {
+    "@raycast/api": "^2.10.1",
+    "@raycast/utils": "^2.3.3"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.5",
+    "@types/react": "19.3.0",
+    "typescript": "^5.6.0"
+  },
+  "scripts": {
+    "build": "ray build -e dist",
+    "dev": "ray develop"
+  }
+}
