@@ -285,6 +285,7 @@ async function openDoc(id, at) {
   clearAudioCache();
   searchIndex = null;
   closeSearch();
+  document.body.classList.remove("browsing");
   $("#library").hidden = true;
   $("#reader").hidden = false;
   document.title = doc.title + " · Steady";
@@ -310,36 +311,136 @@ async function openDoc(id, at) {
   });
 }
 
-function renderBlocks() {
-  const parts = [];
-  doc.blocks.forEach((blk, bi) => {
-    let html = "";
-    let prev = null; // last segment of the previous word
-    const hl = (seg) => (seg[1].includes("h") ? seg[2] || "default" : null);
-    const style = (c) => (c && /^#[0-9a-f]{6}$/.test(c) ? ` style="--hl:${c}"` : "");
-    blk.w.forEach((w, wi) => {
-      const segs = typeof w === "string" ? [[w, ""]] : w;
-      // keep a highlight continuous across the space between two words of the same colour
-      if (wi > 0) html += prev && hl(prev) && hl(prev) === hl(segs[0]) ? `<span class="fh"${style(prev[2])}> </span>` : " ";
-      html += `<span class="w" data-i="${wi}">`;
-      for (const [t, f, c] of segs) {
-        html += f ? `<span class="${[...f].map((x) => "f" + x).join(" ")}"${style(c)}>${esc(t)}</span>` : esc(t);
-      }
-      html += "</span>";
-      prev = segs[segs.length - 1];
-    });
-    parts.push(`<div class="blk k-${blk.k}" data-b="${bi}">${html}</div>`);
+/* Large documents: only the part around where you are is on the page (every word is its own
+   element, so a whole book would make the page crawl). The document is cut into parts of a few
+   thousand words, at a heading where possible. The part you're in and one either side are shown;
+   scrolling by hand adds more, and they're trimmed again once you go back to reading. */
+const PART_WORDS = 3000, PART_BLOCKS = 200;
+let parts = [];   // [{start, end}]: block ranges
+let partOf = [];  // block index -> part index
+let partEls = []; // part index -> its element, while on the page
+let blockEls = []; // block index -> its element, while on the page
+let shown = { from: 0, to: -1 }; // the parts on the page: always a continuous run
+
+function renderBlocks() { // a new document: work out the parts; setPos puts them on the page
+  parts = [];
+  partOf = new Array(doc.blocks.length);
+  let start = 0, words = 0;
+  doc.blocks.forEach((blk, i) => {
+    const n = i - start, heading = /^h[12]$/.test(blk.k);
+    if (n && (words >= PART_WORDS || n >= PART_BLOCKS || (heading && words >= PART_WORDS / 3))) {
+      parts.push({ start, end: i });
+      start = i;
+      words = 0;
+    }
+    words += blk.w.length;
   });
-  $("#blocks").innerHTML = parts.join("");
+  if (doc.blocks.length) parts.push({ start, end: doc.blocks.length });
+  parts.forEach((p, pi) => { for (let b = p.start; b < p.end; b++) partOf[b] = pi; });
+  partEls = [];
+  blockEls = [];
+  shown = { from: 0, to: -1 };
+  $("#blocks").textContent = "";
 }
 
-const blockEl = (b) => $("#blocks").children[b];
+function blockHtml(blk, bi) {
+  let html = "";
+  let prev = null; // last segment of the previous word
+  const hl = (seg) => (seg[1].includes("h") ? seg[2] || "default" : null);
+  const style = (c) => (c && /^#[0-9a-f]{6}$/.test(c) ? ` style="--hl:${c}"` : "");
+  blk.w.forEach((w, wi) => {
+    const segs = typeof w === "string" ? [[w, ""]] : w;
+    // keep a highlight continuous across the space between two words of the same colour
+    if (wi > 0) html += prev && hl(prev) && hl(prev) === hl(segs[0]) ? `<span class="fh"${style(prev[2])}> </span>` : " ";
+    html += `<span class="w" data-i="${wi}">`;
+    for (const [t, f, c] of segs) {
+      html += f ? `<span class="${[...f].map((x) => "f" + x).join(" ")}"${style(c)}>${esc(t)}</span>` : esc(t);
+    }
+    html += "</span>";
+    prev = segs[segs.length - 1];
+  });
+  return `<div class="blk k-${blk.k}" data-b="${bi}">${html}</div>`;
+}
+
+function makePart(pi) {
+  const el = document.createElement("section");
+  el.className = "part";
+  const { start, end } = parts[pi];
+  const html = [];
+  for (let b = start; b < end; b++) html.push(blockHtml(doc.blocks[b], b));
+  el.innerHTML = html.join("");
+  for (const child of el.children) blockEls[+child.dataset.b] = child;
+  return (partEls[pi] = el);
+}
+function dropPart(pi) {
+  const { start, end } = parts[pi];
+  for (let b = start; b < end; b++) { blockEls[b] = undefined; wordElCache.delete(b); }
+  if (pos.b >= start && pos.b < end) { curBlockEl = null; resetLine(); }
+  partEls[pi]?.remove();
+  partEls[pi] = undefined;
+}
+
+// Put parts from..to on the page, keeping the text you're looking at where it is.
+// Returns false if none of what was on the page stayed (a jump somewhere else).
+function showParts(from, to) {
+  from = Math.max(0, from);
+  to = Math.min(parts.length - 1, to);
+  if (from === shown.from && to === shown.to) return true;
+  const keepFrom = Math.max(from, shown.from), keepTo = Math.min(to, shown.to);
+  const kept = keepFrom <= keepTo;
+  const anchor = kept ? partEls[keepFrom] : null;
+  const before = anchor?.getBoundingClientRect().top;
+  for (let p = shown.from; p <= shown.to; p++) if (p < from || p > to) dropPart(p);
+  const above = document.createDocumentFragment(), below = document.createDocumentFragment();
+  for (let p = from; p <= to; p++) {
+    if (kept && p >= keepFrom && p <= keepTo) continue;
+    (kept && p < keepFrom ? above : below).append(makePart(p));
+  }
+  $("#blocks").prepend(above);
+  $("#blocks").append(below);
+  shown = { from, to };
+  markBookmarks();
+  if (anchor) shiftScroll(anchor.getBoundingClientRect().top - before);
+  return kept;
+}
+
+// The parts around block b. While you're scrolling by hand, parts are only added,
+// so the text you're looking at isn't taken away.
+function showAround(b) {
+  const p = partOf[b];
+  if (document.body.classList.contains("browsing") && p >= shown.from - 1 && p <= shown.to + 1) {
+    return showParts(Math.min(shown.from, p), Math.max(shown.to, p));
+  }
+  return showParts(p - 1, p + 1);
+}
+
+// Scrolling by hand: add the next part before you reach the end of what's shown.
+let edgeFrame = 0;
+function fillEdges() {
+  edgeFrame = 0;
+  if (!doc || $("#reader").hidden || !document.body.classList.contains("browsing")) return;
+  const box = $("#blocks");
+  if (!box.firstElementChild) return;
+  const stage = $("#stage"), view = stage.getBoundingClientRect(), r = box.getBoundingClientRect();
+  const margin = stage.clientHeight * 1.5;
+  let added = false;
+  if (r.top > view.top - margin && shown.from > 0) { showParts(shown.from - 1, shown.to); added = true; }
+  else if (r.bottom < view.bottom + margin && shown.to < parts.length - 1) { showParts(shown.from, shown.to + 1); added = true; }
+  if (added) edgeFrame = requestAnimationFrame(fillEdges); // a short part may not be enough
+}
+$("#stage").addEventListener("scroll", () => { edgeFrame ||= requestAnimationFrame(fillEdges); }, { passive: true });
+
+const blockEl = (b) => blockEls[b];
 function markBookmarks() {
   document.querySelectorAll(".blk.bm").forEach((el) => el.classList.remove("bm"));
   for (const m of doc.bookmarks || []) blockEl(m.b)?.classList.add("bm");
 }
 function wordEl(b, w) {
-  if (!wordElCache.has(b)) wordElCache.set(b, Array.from(blockEl(b).querySelectorAll(".w")));
+  if (!wordElCache.has(b)) {
+    const el = blockEl(b);
+    if (!el) return undefined; // not on the page
+    wordElCache.set(b, Array.from(el.querySelectorAll(".w")));
+  }
   return wordElCache.get(b)[w];
 }
 
@@ -391,17 +492,19 @@ let curBlockEl = null;
 let saveTimer = null;
 
 function setPos(b, w, opts = {}) {
-  const blockChanged = b !== pos.b || !curBlockEl;
+  const jumped = !showAround(b); // the text on the page was replaced: no gliding there
+  const blockChanged = b !== pos.b || !curBlockEl || !curBlockEl.isConnected;
   pos = { b, w };
   if (blockChanged) {
     document.querySelectorAll(".blk.cur, .blk.near").forEach((el) => el.classList.remove("cur", "near"));
     curBlockEl = blockEl(b);
     curBlockEl.classList.add("cur");
-    curBlockEl.previousElementSibling?.classList.add("near");
-    curBlockEl.nextElementSibling?.classList.add("near");
+    blockEl(b - 1)?.classList.add("near");
+    blockEl(b + 1)?.classList.add("near");
   }
-  placeCursor(opts.instant);
-  if (!document.body.classList.contains("browsing") || opts.recenter) centerView(opts.instant);
+  const instant = opts.instant || jumped;
+  placeCursor(instant);
+  if (!document.body.classList.contains("browsing") || opts.recenter) centerView(instant);
   updateProgress();
   saveTimer ||= setTimeout(savePos, 3000); // also saves during long hands-free reading
   if (!playing) prepare();
@@ -456,27 +559,37 @@ function centerView(instant) {
   if (settings.focus !== "line" && br.height < stage.clientHeight * 0.5) {
     target = stage.scrollTop + br.top - sr.top + br.height / 2 - stage.clientHeight * 0.46;
   } else { // line focus (or a tall paragraph): keep the current line at the same height
-    const wr = wordEl(pos.b, pos.w).getBoundingClientRect();
+    const word = wordEl(pos.b, pos.w);
+    if (!word) return;
+    const wr = word.getBoundingClientRect();
     target = stage.scrollTop + wr.top - sr.top + wr.height / 2 - stage.clientHeight * 0.44;
   }
   target = Math.max(0, Math.round(target));
   if (Math.abs(target - stage.scrollTop) < 2) return;
   scrollTo(target, instant ? 0 : settings.focus === "line" ? 380 : 520);
 }
+let anim = null; // the scroll in progress: {from, target}
 function scrollTo(target, ms) {
   const stage = $("#stage");
   cancelAnimationFrame(scrollAnim);
+  anim = null;
   programmaticScroll = true;
   if (!ms) { stage.scrollTop = target; requestAnimationFrame(() => (programmaticScroll = false)); return; }
-  const from = stage.scrollTop, t0 = performance.now();
+  const a = (anim = { from: stage.scrollTop, target }), t0 = performance.now();
   const step = (now) => {
     const k = Math.min(1, (now - t0) / ms);
     const e = 1 - Math.pow(1 - k, 3);
-    stage.scrollTop = from + (target - from) * e;
+    stage.scrollTop = a.from + (a.target - a.from) * e;
     if (k < 1) scrollAnim = requestAnimationFrame(step);
-    else requestAnimationFrame(() => (programmaticScroll = false));
+    else { anim = null; requestAnimationFrame(() => (programmaticScroll = false)); }
   };
   scrollAnim = requestAnimationFrame(step);
+}
+// Text was added or removed above what you're looking at: scroll by the same amount so nothing moves.
+function shiftScroll(d) {
+  if (!d) return;
+  $("#stage").scrollTop += d;
+  if (anim) { anim.from += d; anim.target += d; }
 }
 
 let wordsBefore = []; // per block, plus the total at the end
@@ -552,7 +665,7 @@ $("#stage").addEventListener("touchmove", startBrowsing, { passive: true });
 function endBrowsing() {
   if (!document.body.classList.contains("browsing")) return;
   document.body.classList.remove("browsing");
-  centerView(false);
+  setPos(pos.b, pos.w); // back to where you're reading: also trims the parts added while scrolling
 }
 
 // Click a word to read from there. The jump waits a moment, in case it's a double-click
@@ -1119,8 +1232,9 @@ function selectedWords() {
   const range = sel.getRangeAt(0);
   if (!$("#blocks").contains(range.commonAncestorContainer)) return null;
   const node = range.startContainer;
-  const blk = (node.nodeType === 1 ? node : node.parentElement).closest(".blk") || blockEl(0);
-  for (let b = +blk.dataset.b; b < doc.blocks.length; b++) {
+  const blk = (node.nodeType === 1 ? node : node.parentElement).closest(".blk") || $("#blocks .blk");
+  if (!blk) return null;
+  for (let b = +blk.dataset.b; b < doc.blocks.length && blockEl(b); b++) {
     wordEl(b, 0);
     const first = wordElCache.get(b).find((el) => range.intersectsNode(el));
     if (first) return { b, w: +first.dataset.i, text: sel.toString().trim(), range };

@@ -153,6 +153,7 @@ body.reading:not(.pointer-active) .bar { opacity: 0; }
 .stage {
   position: fixed; inset: 0; overflow-y: auto; overflow-x: hidden;
   scrollbar-width: none;
+  overflow-anchor: none; /* app.js keeps the text still when parts of a long document come and go */
   -webkit-mask-image: linear-gradient(transparent 0, #000 16%, #000 80%, transparent 100%);
           mask-image: linear-gradient(transparent 0, #000 16%, #000 80%, transparent 100%);
 }
