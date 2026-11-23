@@ -455,7 +455,7 @@ function bookmarkEnd(m) {
 }
 function markBookmarks() {
   document.querySelectorAll(".bm-bar").forEach((el) => el.remove());
-  document.querySelectorAll(".blk.bm").forEach((el) => el.classList.remove("bm"));
+  document.querySelectorAll(".blk.bm, .blk.bm-preview").forEach((el) => el.classList.remove("bm", "bm-preview"));
   if (!doc || $("#reader").hidden) return;
   const bars = [];
   for (const m of doc.bookmarks || []) { // measure everything first, then add the bars
@@ -2357,7 +2357,7 @@ function blockInlineBounds(b) {
   const br = el.getBoundingClientRect();
   return { top: fr ? fr.top : br.top, bottom: lr ? lr.bottom : br.bottom };
 }
-function collectSelCandidates({ s, r, anchorRect, lastSelRect, refX, refY, hw, hh, measureStack, col, padEdge, safeTop, safeBot }) {
+function collectSelCandidates({ s, r, anchorRect, refX, refY, hw, hh, measureStack, col, padEdge, safeTop, safeBot }) {
   const endB = selectionEndBlock(s);
   const startBounds = blockInlineBounds(s.b);
   const endBounds = blockInlineBounds(endB) || startBounds;
@@ -2365,8 +2365,8 @@ function collectSelCandidates({ s, r, anchorRect, lastSelRect, refX, refY, hw, h
   const nextBounds = endB + 1 < doc.blocks.length ? blockInlineBounds(endB + 1) : null;
 
   const candidates = [];
-  const add = (mode, x, y, w, h, stack, px, py) => {
-    candidates.push({ mode, x, y, w, h, stack, over: false, px, py, dist: rectPointDist(refX, refY, x, y, w, h) });
+  const add = (mode, x, y, w, h, stack, animX, animY) => {
+    candidates.push({ mode, x, y, w, h, stack, over: false, animX, animY, dist: rectPointDist(refX, refY, x, y, w, h) });
   };
 
   // 1. Inter-paragraph gap above the selection's starting paragraph
@@ -2396,11 +2396,15 @@ function collectSelCandidates({ s, r, anchorRect, lastSelRect, refX, refY, hw, h
   }
 
   // 3. Trailing whitespace at the end of a short line (no words to the right on that line, clear of adjacent lines)
-  const anchorBlk = blockEl(endB) && anchorRect === lastSelRect ? endB : s.b;
+  const midY = (anchorRect.top + anchorRect.bottom) / 2;
+  let anchorBlk = s.b;
+  for (let b = s.b; b <= endB; b++) {
+    const bounds = blockInlineBounds(b);
+    if (bounds && midY >= bounds.top - 4 && midY <= bounds.bottom + 4) { anchorBlk = b; break; }
+  }
   if (blockEl(anchorBlk)) {
     wordEl(anchorBlk, 0);
     const ws = wordElCache.get(anchorBlk) || [];
-    const midY = (anchorRect.top + anchorRect.bottom) / 2;
     const tol = Math.max(8, anchorRect.height * 0.55);
     const aPrev = anchorBlk > 0 ? blockInlineBounds(anchorBlk - 1) : null;
     const aNext = anchorBlk + 1 < doc.blocks.length ? blockInlineBounds(anchorBlk + 1) : null;
@@ -2487,7 +2491,7 @@ function showSelPop(isScroll = false) {
   }
 
   const candidates = collectSelCandidates({
-    s, r, anchorRect, lastSelRect, refX, refY, hw, hh, measureStack,
+    s, r, anchorRect, refX, refY, hw, hh, measureStack,
     col: $("#blocks").getBoundingClientRect(), padEdge, safeTop, safeBot,
   });
 
@@ -2498,13 +2502,13 @@ function showSelPop(isScroll = false) {
   }
   if (!pick) {
     // Narrow viewport fallback when neither paragraph gaps nor margins have room
-    let top = r.top - hh - 8, py = 4;
-    if (top < safeTop) { top = r.bottom + 8; py = -4; }
-    pick = { mode: "over", x: clamp(r.left + r.width / 2 - hw / 2, padEdge, innerWidth - hw - padEdge), y: top, stack: false, over: true, px: 0, py };
+    let top = r.top - hh - 8, animY = 4;
+    if (top < safeTop) { top = r.bottom + 8; animY = -4; }
+    pick = { mode: "over", x: clamp(r.left + r.width / 2 - hw / 2, padEdge, innerWidth - hw - padEdge), y: top, stack: false, over: true, animX: 0, animY };
   }
 
   selPlace = pick.mode;
-  const offscreen = r.bottom < safeTop || r.top > safeBot;
+  const offscreen = r.bottom < 0 || r.top > innerHeight || (isScroll && (r.bottom < safeTop || r.top > safeBot));
   selPop.dataset.place = pick.mode;
   selPop.classList.toggle("stack", !!pick.stack);
   selPop.classList.toggle("over", !!pick.over);
@@ -2515,8 +2519,8 @@ function showSelPop(isScroll = false) {
     selGlide.classList.remove("on");
     selPop.style.setProperty("--pop-o", "1");
     selPop.style.setProperty("--pop-s", "1");
-    selPop.style.setProperty("--pop-x", pick.px + "px");
-    selPop.style.setProperty("--pop-y", pick.py + "px");
+    selPop.style.setProperty("--pop-x", pick.animX + "px");
+    selPop.style.setProperty("--pop-y", pick.animY + "px");
   }
   selPop.style.left = Math.round(pick.x) + "px";
   selPop.style.top = Math.round(pick.y) + "px";
@@ -2547,10 +2551,14 @@ document.addEventListener("selectionchange", () => {
   if (selHighlight && s.rangeCount && !s.isCollapsed) selHighlight.add(s.getRangeAt(0).cloneRange());
   if (s.isCollapsed) { hideSelPop(); if (!pressing) catchUp(); }
 });
-$("#stage").addEventListener("scroll", () => selPop.hidden || showSelPop(true), { passive: true }); // follow the text
+let selScrollFrame = 0;
+$("#stage").addEventListener("scroll", () => {
+  if (selPop.hidden) return;
+  selScrollFrame ||= requestAnimationFrame(() => { selScrollFrame = 0; if (!selPop.hidden) showSelPop(true); });
+}, { passive: true }); // follow the text
 selPop.addEventListener("pointerover", (e) => {
   const btn = e.target instanceof Element ? e.target.closest("button") : null;
-  if (!btn) return;
+  if (!btn) { moveSelGlide(null); clearSelPreview(); return; }
   moveSelGlide(btn);
   if (btn.dataset.act === "mark") previewBookmarkSelection();
   else {
@@ -2577,6 +2585,7 @@ selPop.addEventListener("click", async (e) => {
   selPop.style.setProperty("--pop-o", "1");
   selPop.style.setProperty("--pop-s", "1");
   btn.textContent = btn.dataset.act === "copy" ? "Copied" : "Bookmarked";
+  showSelPop(true); // re-anchor for the wider confirmation label
   moveSelGlide(btn);
   setTimeout(() => { hideSelPop(); getSelection().removeAllRanges(); }, 650);
 });
