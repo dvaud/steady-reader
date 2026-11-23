@@ -9,12 +9,15 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import shutil
 import threading
 import unicodedata
 import urllib.request
 import wave
 from collections import OrderedDict
 from difflib import SequenceMatcher
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -259,6 +262,40 @@ MARKS = set("ˈˌːˑ")
 PAUSES = set(",.;:!?…—")
 
 
+WINDOWS = os.name == "nt"
+
+
+@lru_cache(maxsize=1)
+def _espeak_data_dir() -> Path:
+    """Where espeak-ng should read its data. On Windows it opens files with plain fopen, which
+    fails on paths with non-ASCII letters (e.g. an accented user name) or that are long, and
+    then silently falls back to a path baked in at build time. So it always reads a short ASCII copy."""
+    from piper.phonemize_espeak import ESPEAK_DATA_DIR as src
+    if not WINDOWS:
+        return src
+
+    def usable(p) -> bool:
+        return str(p).isascii() and len(str(p)) < 100
+
+    stamp = str((src / "phontab").stat().st_size) + "-" + str(sum(1 for _ in src.rglob("*")))
+    drive = os.environ.get("SystemDrive", "C:") + "\\"
+    for base in (os.environ.get("ProgramData", ""), os.environ.get("PUBLIC", ""), drive):
+        if not base:
+            continue
+        dest = Path(base) / "Steady" / "espeak-ng-data"
+        if not usable(dest):
+            continue
+        try:
+            mark = dest / ".steady-copy"
+            if not mark.exists() or mark.read_text() != stamp:
+                shutil.copytree(src, dest, dirs_exist_ok=True)
+                mark.write_text(stamp)
+            return dest
+        except OSError:
+            continue
+    return src
+
+
 def _load_voice(path: Path):
     """Load a Piper voice whose model also reports how long each phoneme lasts (for
     word timing) and accepts per-phoneme duration controls (for _ending_factors and EOS tail)."""
@@ -294,11 +331,11 @@ def _load_voice(path: Path):
         session = onnxruntime.InferenceSession(model.SerializeToString(), sess_options=opts,
                                                providers=["CPUExecutionProvider"])
         config = PiperConfig.from_dict(json.loads(Path(f"{path}.json").read_text("utf8")))
-        voice = PiperVoice(config=config, session=session)
+        voice = PiperVoice(config=config, session=session, espeak_data_dir=_espeak_data_dir())
         voice.steady_dur_scale = True
         return voice
     except Exception:  # unusual model: plain Piper (word endings not protected)
-        return PiperVoice.load(str(path), include_alignments=True)
+        return PiperVoice.load(str(path), include_alignments=True, espeak_data_dir=_espeak_data_dir())
 
 
 def _is_mark(p: str) -> bool:
