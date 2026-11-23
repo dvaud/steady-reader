@@ -54,7 +54,7 @@ function cleanText(s) {
 }
 
 // main.ts
-var DEFAULTS = { url: "http://localhost:8765", app: "Steady" };
+var DEFAULTS = { url: "http://localhost:41737", app: "Steady" };
 var TYPES = {
   md: "text/markdown",
   pdf: "application/pdf",

@@ -57,16 +57,22 @@
   </header>
 
   <div id="stage" class="stage">
-    <article id="doc" class="doc"><div id="cursor"></div><div id="blocks"></div></article>
+    <article id="doc" class="doc"><div id="band"></div><div id="scout"></div><div id="cursor"></div><div id="blocks"></div></article>
   </div>
+  <div id="ptrHalo" class="ptr-halo" aria-hidden="true"></div>
+  <div id="ptrNib" class="ptr-nib" aria-hidden="true"><svg class="ptr-nib-svg" viewBox="-28 -28 56 56" width="56" height="56"><g id="ptrNibSquash"><path id="ptrNibPath" d=""/></g></svg></div>
 
   <footer class="foot">
     <button id="hold" class="hold" title="Hold to read">
       <span id="hintText">Hold <kbd>space</kbd> to read · double-tap to lock</span>
     </button>
-    <div class="keys">← → sentence &nbsp;·&nbsp; ↑ ↓ paragraph &nbsp;·&nbsp; O contents &nbsp;·&nbsp; B bookmark &nbsp;·&nbsp; hold Shift left / right: slower / faster &nbsp;·&nbsp; M mute &nbsp;·&nbsp; click a word to jump</div>
+    <div class="keys">← → sentence &nbsp;·&nbsp; ↑ ↓ paragraph &nbsp;·&nbsp; O contents &nbsp;·&nbsp; B bookmark (hold for a passage) &nbsp;·&nbsp; hold Shift left / right: slower / faster &nbsp;·&nbsp; M mute &nbsp;·&nbsp; click a word to jump</div>
   </footer>
-  <div class="progress"><div id="progressFill"></div></div>
+  <div id="progress" class="progress">
+    <div class="track"><div id="progressFill"></div></div>
+    <div id="progressPins"></div><i id="progressHere"></i><i id="scrubLine"></i>
+  </div>
+  <div id="scrubTip" class="tip scrub-tip" hidden></div>
 
   <div id="rateTip" class="tip" role="tooltip" hidden></div>
   <form id="search" class="search" role="search" autocomplete="off" hidden>
@@ -116,7 +122,7 @@
     <div class="row">
       <label>Guide</label>
       <div class="seg" data-setting="guide">
-        <button data-v="reveal">Reveal</button><button data-v="highlight">Highlight</button>
+        <button data-v="reveal">Reveal</button><button data-v="highlight">Underline</button>
       </div>
     </div>
     <div class="row">

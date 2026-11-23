@@ -12,10 +12,14 @@
   --line: rgba(42, 41, 38, .14);
   --soft: rgba(42, 41, 38, .05);
   --panel: #fffefb;
-  --cursor: rgba(112, 128, 245, .24);
+  --pacer-glow: rgba(94, 111, 216, .24);
   --mark-mix: 42%;
-  --shade: rgba(42, 41, 38, .075);
+  --band: rgba(42, 41, 38, .052);
+  --band-ring: rgba(42, 41, 38, .055);
   --reveal: #fffefb;
+  --reveal-shadow: 0 1px 2px rgba(42, 36, 28, .08), 0 3px 10px rgba(42, 36, 28, .06), 0 0 0 1px rgba(42, 41, 38, .085);
+  --scout-bg: rgba(94, 111, 216, .05);
+  --scout-ring: rgba(94, 111, 216, .12);
   --accent: #5e6fd8;
   --shadow: 0 10px 40px rgba(40, 35, 25, .12), 0 1px 3px rgba(40, 35, 25, .08);
 }
@@ -26,10 +30,14 @@
   --line: rgba(61, 51, 40, .16);
   --soft: rgba(61, 51, 40, .06);
   --panel: #f8f1e3;
-  --cursor: rgba(120, 112, 220, .22);
+  --pacer-glow: rgba(106, 95, 196, .24);
   --mark-mix: 45%;
-  --shade: rgba(61, 51, 40, .085);
+  --band: rgba(61, 51, 40, .064);
+  --band-ring: rgba(61, 51, 40, .065);
   --reveal: #fcf7ec;
+  --reveal-shadow: 0 1px 2px rgba(61, 48, 30, .09), 0 3px 10px rgba(61, 48, 30, .07), 0 0 0 1px rgba(61, 51, 40, .10);
+  --scout-bg: rgba(106, 95, 196, .057);
+  --scout-ring: rgba(106, 95, 196, .13);
   --accent: #6a5fc4;
   --shadow: 0 10px 40px rgba(70, 50, 20, .14), 0 1px 3px rgba(70, 50, 20, .1);
 }
@@ -40,10 +48,14 @@
   --line: rgba(230, 227, 221, .14);
   --soft: rgba(230, 227, 221, .06);
   --panel: #222226;
-  --cursor: rgba(140, 155, 255, .30);
+  --pacer-glow: rgba(154, 166, 255, .28);
   --mark-mix: 38%;
-  --shade: rgba(230, 227, 221, .07);
-  --reveal: #2c2c32;
+  --band: rgba(230, 227, 221, .048);
+  --band-ring: rgba(230, 227, 221, .065);
+  --reveal: #31323b;
+  --reveal-shadow: 0 2px 8px rgba(0, 0, 0, .48), inset 0 1px 0 rgba(255, 255, 255, .08), 0 0 0 1px rgba(230, 227, 221, .16);
+  --scout-bg: rgba(154, 166, 255, .07);
+  --scout-ring: rgba(154, 166, 255, .16);
   --accent: #9aa6ff;
   --shadow: 0 10px 40px rgba(0, 0, 0, .45), 0 1px 3px rgba(0, 0, 0, .3);
 }
@@ -137,7 +149,7 @@ kbd {
   background: linear-gradient(var(--bg) 55%, transparent);
   transition: opacity .6s var(--ease);
 }
-body.reading:not(.pointer-active) .bar { opacity: 0; }
+body.reading:not(.pointer-active):not(.peeking) .bar { opacity: 0; }
 .doc-title {
   flex: 1; min-width: 0; text-align: center;
   font-size: 13px; color: var(--muted);
@@ -161,6 +173,7 @@ body.reading:not(.pointer-active) .bar { opacity: 0; }
 
 .doc {
   position: relative;
+  will-change: transform; /* its own layer, so the sub-pixel nudge while gliding (setScroll) is smooth */
   max-width: var(--measure, 34em); margin: 0 auto; padding: 47vh 28px 50vh;
   font-family: var(--read-font); font-size: var(--read-size); line-height: 1.68;
   font-weight: 400; letter-spacing: .003em;
@@ -168,54 +181,197 @@ body.reading:not(.pointer-active) .bar { opacity: 0; }
   text-rendering: optimizeLegibility;
   hyphens: manual; overflow-wrap: break-word;
 }
-#blocks { position: relative; z-index: 1; }
+#blocks { position: relative; z-index: 2; }
+
+#band {
+  position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: 0;
+  border-radius: .40em;
+  pointer-events: none; opacity: 0;
+  transition: transform .22s var(--ease), width .22s var(--ease), height .22s var(--ease),
+              opacity .4s var(--ease), background-color .3s, box-shadow .3s;
+}
+#band.jump { transition: opacity .4s var(--ease), background-color .3s, box-shadow .3s; }
+
+#scout {
+  position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: 1;
+  border-radius: .28em;
+  pointer-events: none; opacity: 0;
+  will-change: transform, width, height, opacity;
+  transition: opacity .18s var(--ease), background-color .2s, box-shadow .2s;
+}
+#scout.on { opacity: 1; }
+body[data-guide="reveal"] #scout {
+  background: var(--scout-bg);
+  box-shadow: inset 0 0 0 1px var(--scout-ring);
+}
+body[data-guide="reveal"] #scout::before {
+  content: ""; position: absolute; left: 1px; top: 15%; bottom: 15%; width: 2px;
+  border-radius: 2px; background: var(--accent);
+  opacity: 0; transform: scaleY(.6);
+  transition: opacity .08s var(--ease), transform .08s var(--ease);
+}
+body[data-guide="reveal"] #scout.press::before {
+  opacity: 1; transform: scaleY(1);
+  transition: opacity .06s ease-out, transform .06s ease-out;
+}
+body[data-guide="reveal"] #scout.alt {
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+body[data-guide="highlight"] #scout {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+body[data-guide="highlight"] #scout::before {
+  content: ""; position: absolute; left: 0; bottom: 0; width: 2px; height: .9em;
+  border-radius: 2px; background: var(--accent); transform-origin: 50% 100%;
+  opacity: 0; transform: scaleY(.4);
+  transition: opacity .08s var(--ease), transform .08s var(--ease);
+}
+body[data-guide="highlight"] #scout.press::before {
+  opacity: 1; transform: scaleY(1);
+  transition: opacity .06s ease-out, transform .06s ease-out;
+}
+body[data-guide="highlight"] #scout.alt {
+  background: color-mix(in srgb, var(--accent) 74%, transparent);
+}
+body.reading:not(.pointer-active):not(.peeking) #scout { opacity: 0 !important; transition: opacity .6s var(--ease); }
+
+.ptr-nib, .ptr-halo {
+  position: fixed; left: 0; top: 0; z-index: 9;
+  pointer-events: none; opacity: 0;
+  will-change: transform, opacity;
+}
+/* Outer #ptrNib only translates to exact (px, py); inner SVG handles shape, fill, press-scale, and release pulse */
+.ptr-nib {
+  width: 0; height: 0;
+  color: color-mix(in srgb, var(--fg) 74%, transparent);
+  transition: color .15s var(--ease), opacity .14s var(--ease);
+}
+.ptr-nib.on { opacity: 1; }
+.ptr-nib.word { color: color-mix(in srgb, var(--accent) 84%, transparent); }
+.ptr-nib.down { color: var(--accent); }
+.ptr-nib.caret { color: var(--accent); }
+.ptr-nib.bm { color: var(--accent); }
+/* Over the active reading word, or resting still on a word: quiet so you can read right through it */
+.ptr-nib.now-word { opacity: .4; transition: color .15s var(--ease), opacity .16s var(--ease); }
+.ptr-nib.settled { opacity: .4; transition: color .15s var(--ease), opacity .4s var(--ease); }
+
+.ptr-nib-svg {
+  position: absolute; left: -28px; top: -28px;
+  overflow: visible;
+  fill: currentColor;
+  transform-origin: 28px 28px;
+  transition: transform .08s var(--ease);
+}
+.ptr-nib.down .ptr-nib-svg { transform: scale(.88); }
+.ptr-nib.pulse .ptr-nib-svg { animation: ptrPlayPulse .14s var(--ease); }
+@keyframes ptrPlayPulse {
+  0%   { transform: translateX(0) scale(.88); }
+  45%  { transform: translateX(2px) scale(1.02); }
+  100% { transform: translateX(0) scale(1); }
+}
+
+.ptr-halo {
+  width: 22px; height: 22px; margin: -11px 0 0 -11px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--fg) 19%, transparent);
+  background: transparent;
+  transition: opacity .2s var(--ease), border-color .2s;
+}
+.ptr-halo.on { opacity: 1; }
+.ptr-halo.down {
+  border-color: color-mix(in srgb, var(--accent) 48%, transparent);
+}
+body.reading:not(.pointer-active):not(.peeking) .ptr-nib,
+body.reading:not(.pointer-active):not(.peeking) .ptr-halo { opacity: 0 !important; transition: opacity .6s var(--ease); }
 
 #cursor {
-  position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: 0;
-  background: var(--cursor); border-radius: .32em;
+  position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: 1;
+  background: var(--accent); border-radius: .28em;
   pointer-events: none; opacity: 0;
   transition: transform .14s var(--ease), width .14s var(--ease), height .14s var(--ease), opacity .3s;
 }
 #cursor.on { opacity: 1; }
 #cursor.jump { transition: opacity .3s; }
 
-.blk { margin: 0 0 1.05em; opacity: .17; transition: opacity .45s var(--ease); }
+.blk { margin: 0 0 1.05em; opacity: .17; transition: opacity .45s var(--ease);
+  /* keep the space at the end of each line: when it collapses, Safari's force-click Look Up on the first
+     word of a line picks the last word of the line above (each word is its own element) */
+  white-space: pre-wrap; }
 .blk.near { opacity: .3; }
 .blk.cur { opacity: 1; }
-body[data-focus="line"] .blk.near { opacity: .2; }
+body[data-focus="line"] .blk.near { opacity: .19; }
 body[data-focus="line"] .blk:not(.cur):not(.near) { opacity: .13; }
-body.browsing .blk { opacity: .62 !important; }
-body.browsing .blk.cur { opacity: 1 !important; }
+/* scrolling by hand, or paused hands-free (space held): everything readable */
+body.browsing .blk, body.peeking .blk { opacity: .62 !important; }
+body.browsing .blk.cur, body.peeking .blk.cur { opacity: 1 !important; }
+/* resting (a moment after you let go): the focus fades away, only the word under the cursor stays marked */
+body.rested .blk { opacity: 1 !important; transition: opacity .8s var(--ease); }
 
-.k-h1, .k-h2, .k-h3 { font-weight: 650; letter-spacing: -.005em; line-height: 1.35; margin-top: 1.7em; margin-bottom: .75em; }
+.k-h1, .k-h2, .k-h3, .k-h4, .k-h5, .k-h6 { font-weight: 650; letter-spacing: -.005em; line-height: 1.35; margin-top: 1.7em; margin-bottom: .75em; }
 .k-h1 { font-size: 1.2em; }
 .k-h2 { font-size: 1.1em; }
-.k-h3 { font-size: 1em; }
+.k-h3, .k-h4, .k-h5, .k-h6 { font-size: 1em; }
 .k-li { position: relative; padding-left: 1.15em; margin-bottom: .45em; }
 .k-li::before { content: ""; position: absolute; left: .2em; top: .78em; width: .3em; height: .3em; border-radius: 50%; background: var(--muted); }
 .k-q { padding-left: 1em; border-left: 2px solid var(--line); }
 
-.w { cursor: pointer; }
+#stage { cursor: default; }
+#blocks, .blk, .blk .fh, .w { cursor: pointer; }
+body.ptr-selecting #blocks, body.ptr-selecting .blk, body.ptr-selecting .blk .fh, body.ptr-selecting .w { cursor: text; }
+@media (hover: hover) and (pointer: fine) {
+  body.ptr-custom.ptr-live #stage,
+  body.ptr-custom.ptr-live #doc,
+  body.ptr-custom.ptr-live #blocks,
+  body.ptr-custom.ptr-live .blk,
+  body.ptr-custom.ptr-live .blk .fh,
+  body.ptr-custom.ptr-live .w,
+  body.ptr-custom.ptr-live .bm-bar { cursor: none; }
+}
 
-/* Reveal guide: every word in the current paragraph is shaded; the moving card uncovers the current one */
-.blk .w { padding: .04em .07em; margin: 0 -.07em; border-radius: .22em; transition: color .16s, background-color .16s; }
-body[data-guide="reveal"] .blk.cur .w { background: var(--shade); color: color-mix(in srgb, var(--fg) 38%, transparent); }
+/* Lantern peek: hovering a dimmed paragraph gently warms it after a short beat of intent */
+body[data-focus] .blk.ptr-blk:not(.cur) { opacity: .36; }
 
-/* Line focus: only the current line stays clear; words already read on it fade a little */
-body[data-focus="line"] .blk.cur .w { background: transparent; color: color-mix(in srgb, var(--fg) 22%, transparent); }
+/* Focus & guide: #band frames the active region in Reveal, or sits as a margin tick beside the line in Underline */
+.blk .w { transition: color .18s var(--ease); }
+body[data-guide="reveal"] .blk.cur .w { color: color-mix(in srgb, var(--fg) 48%, transparent); }
+body[data-guide="highlight"] .blk.cur .w { color: color-mix(in srgb, var(--fg) 80%, transparent); }
+
+/* Line focus: only the current line stays clear; words already read on it fade softly */
+body[data-focus="line"] .blk.cur .w { color: color-mix(in srgb, var(--fg) 26%, transparent); }
 /* highlights off the current line are dimmed — including the highlighted spaces between words */
 body[data-focus="line"] .blk.cur .w:not(.line) .fh,
 body[data-focus="line"] .blk.cur > .fh { opacity: .45; }
 body[data-focus="line"] .blk.cur > .w.line + .fh:has(+ .w.line) { opacity: 1; }
-/* a highlighted word already has a coloured box, so it gets no extra shading */
-.blk.cur .w:has(.fh) { background: transparent !important; }
-body[data-focus="line"] .blk.cur .w.line { color: var(--fg); }
-body[data-focus="line"][data-guide="reveal"] .blk.cur .w.line { background: var(--shade); color: color-mix(in srgb, var(--fg) 62%, transparent); }
-body[data-focus="line"] .blk.cur .w.line.read { color: color-mix(in srgb, var(--fg) 38%, transparent); }
-/* these two must win over the focus/guide rules above */
-body.browsing .blk.cur .w { color: var(--fg) !important; background: transparent !important; }
-.blk.cur .w.now { background: transparent !important; color: var(--fg) !important; }
-body[data-guide="reveal"] #cursor { background: var(--reveal); box-shadow: 0 1px 3px rgba(0, 0, 0, .12), 0 0 0 1px var(--line); }
+body[data-focus="line"][data-guide="highlight"] .blk.cur .w.line { color: color-mix(in srgb, var(--fg) 76%, transparent); }
+body[data-focus="line"][data-guide="reveal"] .blk.cur .w.line { color: color-mix(in srgb, var(--fg) 66%, transparent); }
+body[data-focus="line"][data-guide="highlight"] .blk.cur .w.line.read { color: color-mix(in srgb, var(--fg) 40%, transparent); }
+body[data-focus="line"][data-guide="reveal"] .blk.cur .w.line.read { color: color-mix(in srgb, var(--fg) 42%, transparent); }
+
+body[data-guide="reveal"] #band.on {
+  opacity: 1; background: var(--band); box-shadow: inset 0 0 0 1px var(--band-ring);
+}
+body[data-focus="paragraph"][data-guide="reveal"] #band { border-radius: .52em; }
+body[data-focus="line"][data-guide="highlight"] #band { border-radius: 999px; }
+body[data-focus="line"][data-guide="highlight"] #band.on {
+  opacity: 1; background: color-mix(in srgb, var(--accent) 48%, transparent);
+}
+
+/* these must win over the focus/guide rules above */
+body.browsing .blk.cur .w, body.peeking .blk.cur .w, body.rested .blk.cur .w { color: var(--fg) !important; }
+body.browsing #band, body.peeking #band { opacity: 0 !important; transition: opacity .25s var(--ease); }
+body.rested #band { opacity: 0 !important; transition: opacity .8s var(--ease); }
+body.rested .blk .w { transition: color .8s var(--ease); }
+body.rested .blk.cur .fh { opacity: 1 !important; }
+.blk.cur .w.now { color: var(--fg) !important; }
+#blocks .blk .w.ptr-hover { color: var(--fg); transition: color .08s var(--ease); }
+#blocks .blk .w.ptr-wake:not(.now):not(.marking):not(.hit):not(.bm-show) {
+  color: color-mix(in srgb, var(--accent) 20%, var(--fg)) !important;
+  transition: color .07s ease-out;
+}
+body[data-guide="reveal"] #cursor { background: var(--reveal); box-shadow: var(--reveal-shadow); }
+body[data-guide="highlight"] #cursor { border-radius: 999px; box-shadow: 0 -2px 9px var(--pacer-glow); }
+body.rested[data-guide="highlight"] #cursor.on { opacity: .65; box-shadow: none; }
 .fb { font-weight: 650; }
 .fi { font-style: italic; }
 .fu { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: .18em; }
@@ -239,9 +395,36 @@ body[data-guide="reveal"] #cursor { background: var(--reveal); box-shadow: 0 1px
 body.reading .keys { opacity: 0; }
 body.reading .hold:not(.busy) { opacity: 0; transform: translateY(6px); }
 body.reading.locked .hold { opacity: .85; transform: none; }
+body.peeking .hold { opacity: 1; color: var(--fg); }
 
-.progress { position: fixed; left: 0; right: 0; bottom: 0; height: 2px; z-index: 11; }
-.progress div { height: 100%; width: 0; background: var(--accent); opacity: .5; transition: width .4s var(--ease); }
+/* the bar is drawn at the bottom of a taller strip, so it's easy to hit; hovering it makes it a scrubber.
+   Open, it lifts off the screen edge, so you never have to touch the edge (which brings up a hidden Dock). */
+.progress { position: fixed; left: 0; right: 0; bottom: 0; height: 38px; z-index: 11; cursor: pointer; --lift: 0px; }
+.progress.scrub { --lift: 16px; }
+.progress .track { position: absolute; left: 0; right: 0; bottom: var(--lift); height: 2px; transition: height .18s var(--ease), background-color .18s, bottom .18s var(--ease); }
+#progressFill { height: 100%; width: 0; background: var(--accent); opacity: .5; transition: width .4s var(--ease), opacity .18s; }
+.progress.scrub .track { height: 8px; border-radius: 4px; background: color-mix(in srgb, var(--fg) 9%, transparent); }
+.progress.scrub #progressFill { opacity: .75; }
+.progress i { position: absolute; bottom: var(--lift); left: 0; pointer-events: none; }
+/* away from the reading: a mark where you're looking */
+#progressHere { width: 3px; height: 10px; margin-left: -1.5px; border-radius: 2px 2px 0 0; background: var(--fg); opacity: 0; transition: opacity .25s, height .18s, bottom .18s var(--ease); }
+body.away #progressHere { opacity: .75; }
+.progress.scrub #progressHere { height: 14px; }
+/* places that pull the pointer in, faded in by how near it is */
+.pin { width: 2px; height: 14px; margin-left: -1px; border-radius: 2px 2px 0 0; opacity: 0; transition: height .12s, width .12s, margin .12s, opacity .2s, bottom .18s var(--ease); }
+.progress:not(.scrub) .pin { opacity: 0 !important; } /* only while the bar is open */
+.pin.bm { background: var(--accent); width: 3px; margin-left: -1.5px; }
+.pin.ch { background: var(--muted); height: 12px; }
+.pin.sec { background: var(--muted); height: 8px; }
+.pin.was { background: var(--fg); }
+.pin.pos { background: var(--accent); }
+.pin.on { height: 20px; width: 4px; margin-left: -2px; }
+#scrubLine { width: 2px; height: 14px; margin-left: -1px; border-radius: 2px 2px 0 0; background: var(--fg); opacity: 0; transition: bottom .18s var(--ease); }
+.progress.scrub #scrubLine[class=""] { opacity: .55; } /* a plain point: no pin under it */
+.scrub-tip { max-width: min(420px, calc(100vw - 16px)); }
+body:has(.progress.scrub) .foot { opacity: 0; transition: opacity .15s; } /* out of the way of the tip */
+.scrub-tip strong, .scrub-tip span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+#cursor.gone, #band.gone { visibility: hidden; }
 
 .search {
   position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 25;
@@ -253,6 +436,8 @@ body.reading.locked .hold { opacity: .85; transform: none; }
 #searchCount { font-size: 12px; color: var(--muted); padding: 0 8px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .search button { width: 28px; height: 28px; border-radius: 8px; color: var(--muted); font-size: 14px; }
 .search button:hover { background: var(--soft); color: var(--fg); }
+/* hold B: the passage being bookmarked */
+.blk .w.marking { color: var(--fg) !important; background: color-mix(in srgb, var(--accent) 18%, transparent) !important; border-radius: 0; }
 .blk .w.hit { color: var(--fg) !important; box-shadow: inset 0 -2px 0 var(--accent); border-radius: .22em .22em 0 0; }
 
 .tip {
@@ -300,6 +485,7 @@ body.reading.locked .hold { opacity: .85; transform: none; }
 .outline button:hover { color: var(--fg); background: var(--soft); }
 .outline .l2 { padding-left: 26px; }
 .outline .l3 { padding-left: 40px; font-size: 13px; }
+.outline .l4, .outline .l5, .outline .l6 { padding-left: 54px; font-size: 13px; }
 .outline .here { color: var(--fg); background: var(--soft); }
 .outline .empty { padding: 10px 12px; font-size: 13px; color: var(--muted); margin: 0; }
 
@@ -310,13 +496,31 @@ body.reading.locked .hold { opacity: .85; transform: none; }
   font-size: 13px; animation: pop .14s var(--ease);
 }
 @keyframes pop { from { opacity: 0; transform: translateY(4px); } }
-.sel-pop button { padding: 6px 11px; border-radius: 8px; color: var(--muted); white-space: nowrap; }
+.sel-pop button { padding: 9px 15px; border-radius: 8px; color: var(--muted); white-space: nowrap; }
 .sel-pop button:hover { background: var(--soft); color: var(--fg); }
-/* a bookmarked paragraph gets a faint tick in the margin */
+/* a bookmark gets a faint bar in the margin beside every line it covers (placed by markBookmarks);
+   hovering it lights up the bookmarked words, clicking it reads from there */
 .blk.bm { position: relative; }
-.blk.bm::after {
-  content: ""; position: absolute; left: -15px; top: .45em; width: 3px; height: .95em;
-  border-radius: 2px; background: var(--accent); opacity: .5;
+.bm-bar { position: absolute; left: -21px; width: 15px; cursor: pointer; user-select: none; -webkit-user-select: none; }
+.bm-bar::before {
+  content: ""; position: absolute; left: 6px; top: 0; bottom: 0; width: 3px;
+  border-radius: 2px; background: color-mix(in srgb, var(--accent) 50%, var(--bg)); transition: background-color .15s;
+}
+.bm-bar:hover::before { background: var(--accent); }
+/* #blocks: this must win over the current-paragraph and resting rules, which also use !important.
+   The tint is a text highlight, so the spaces between the words are tinted too; the word boxes
+   themselves go clear underneath it. */
+#blocks .blk .w.bm-show { color: var(--fg) !important; background: transparent !important; transition: color .12s; }
+/* Selecting text: Safari's own selection paints boxes that fill the gaps around lines and paragraphs and leaves
+   seams between words (each word is its own element). Hide it and paint the "sel" highlight instead, which covers
+   only the selected text and the spaces in it (app.js copies the selection into it). */
+@supports selector(::highlight(sel)) {
+  #blocks ::selection { background: transparent; }
+  ::highlight(sel) { background-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+}
+::highlight(bm-show) { background-color: color-mix(in srgb, var(--accent) 22%, transparent); }
+@supports not selector(::highlight(bm-show)) { /* older browsers: tint the words only */
+  #blocks .blk .w.bm-show { background: color-mix(in srgb, var(--accent) 18%, transparent) !important; border-radius: 0; }
 }
 .outline .sec { margin: 6px 12px 4px; font-size: 11.5px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); opacity: .8; }
 .outline .sec:first-child { margin-top: 4px; }
@@ -360,5 +564,6 @@ body.reading.locked .hold { opacity: .85; transform: none; }
   .doc { padding-left: 20px; padding-right: 20px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  #cursor, .blk, .progress div { transition: none; }
+  #cursor, #band, #scout, #scout::before, .blk, .blk .w, #progressFill, .progress .track { transition: none; }
+  .ptr-nib, .ptr-halo, #scout::before { display: none; }
 }

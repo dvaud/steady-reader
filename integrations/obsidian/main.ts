@@ -7,7 +7,7 @@ interface Settings {
   url: string; // where Steady runs
   app: string; // Steady.app's name or full path, for starting it
 }
-const DEFAULTS: Settings = { url: "http://localhost:8765", app: "Steady" };
+const DEFAULTS: Settings = { url: "http://localhost:41737", app: "Steady" };
 
 // Files Steady can read, with the type it is sent as.
 const TYPES: Record<string, string> = {

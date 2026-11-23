@@ -1,7 +1,7 @@
 """Turn PDF / DOCX / HTML / Markdown / TXT into a simple, uniform block model.
 
 A document is a list of blocks:  {"k": kind, "w": [word, ...]}
-  kind: "p" paragraph, "h1".."h3" heading, "li" list item, "q" quote
+  kind: "p" paragraph, "h1".."h6" heading, "li" list item, "q" quote
   word: a plain string, or a list of [text, flags] segments when part of
         the word is formatted. flags is a string made of
         b = bold, i = italic, h = highlight, u = underline.
@@ -9,6 +9,7 @@ A document is a list of blocks:  {"k": kind, "w": [word, ...]}
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -20,7 +21,7 @@ from pathlib import Path
 from bs4 import BeautifulSoup, Comment, NavigableString, Tag
 
 # Bump when extraction improves; older documents are re-read from their saved file.
-PARSER_VERSION = 2
+PARSER_VERSION = 3  # 3: headings keep levels 4 to 6
 
 LIGATURES = str.maketrans({
     "ﬀ": "ff", "ﬁ": "fi", "ﬂ": "fl", "ﬃ": "ffi",
@@ -124,7 +125,7 @@ SKIP_TAGS = {
     "form", "iframe", "input", "select", "textarea", "video", "audio", "canvas",
     "math", "template", "object",
 }
-HEADINGS = {"h1": "h1", "h2": "h2", "h3": "h3", "h4": "h3", "h5": "h3", "h6": "h3"}
+HEADINGS = {"h1": "h1", "h2": "h2", "h3": "h3", "h4": "h4", "h5": "h5", "h6": "h6"}
 
 
 def _inline_flags(tag: Tag) -> str:
@@ -315,6 +316,13 @@ OCR_LANGS = ["eng", "hun", "fra", "deu", "nld"]
 @lru_cache(maxsize=1)
 def ocr_languages() -> str | None:
     """Tesseract language string, or None if Tesseract isn't installed."""
+    if os.name == "nt" and not shutil.which("tesseract"):
+        # The Windows installer doesn't put Tesseract on PATH; PyMuPDF also looks it up there.
+        for base in (os.environ.get("ProgramFiles", r"C:\Program Files"), os.environ.get("LOCALAPPDATA", "")):
+            d = os.path.join(base, "Tesseract-OCR") if base else ""
+            if d and os.path.isfile(os.path.join(d, "tesseract.exe")):
+                os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
+                break
     if not shutil.which("tesseract"):
         return None
     try:
@@ -431,7 +439,7 @@ def pdf_to_blocks(path: Path, progress=None) -> tuple[list[dict], str | None, li
         notes.append(f"{ocr_pages} scanned page{'s' if ocr_pages > 1 else ''} read with OCR (no formatting).")
     if skipped_scans:
         notes.append(f"{skipped_scans} scanned page{'s' if skipped_scans > 1 else ''} skipped: install Tesseract for OCR "
-                     "(brew install tesseract tesseract-lang).")
+                     "(Mac: brew install tesseract tesseract-lang; Windows: winget install UB-Mannheim.TesseractOCR).")
 
     # Body font size = most common size by character count.
     sizes = Counter()

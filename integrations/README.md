@@ -61,7 +61,7 @@ whether Raycast may control your browser: allow it. For Firefox, install Raycast
 
 ## Both
 
-- They use Steady at `http://localhost:8765` and start **Steady.app** (found by its id, so
+- They use Steady at `http://localhost:41737` and start **Steady.app** (found by its id, so
   Safari's Steady web app isn't mistaken for it). Change either in the plugin's settings
   (Obsidian) or the extension's preferences (Raycast), for example to
   `/Applications/Steady.app` if you have more than one copy.

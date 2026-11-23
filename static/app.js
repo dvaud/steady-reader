@@ -113,6 +113,7 @@ let libDocs = [];
 
 async function showLibrary() {
   stopReading();
+  resetPointerHover();
   doc = null;
   $("#reader").hidden = true;
   $("#library").hidden = false;
@@ -282,6 +283,7 @@ async function openDoc(id, at) {
   segCache = new Map();
   wordElCache = new Map();
   resetLine();
+  resetPointerHover();
   clearAudioCache();
   searchIndex = null;
   closeSearch();
@@ -378,6 +380,7 @@ function dropPart(pi) {
   if (pos.b >= start && pos.b < end) { curBlockEl = null; resetLine(); }
   partEls[pi]?.remove();
   partEls[pi] = undefined;
+  if (hoverWord && !hoverWord.isConnected) setHoverWord(null);
 }
 
 // Put parts from..to on the page, keeping the text you're looking at where it is.
@@ -431,10 +434,93 @@ function fillEdges() {
 $("#stage").addEventListener("scroll", () => { edgeFrame ||= requestAnimationFrame(fillEdges); }, { passive: true });
 
 const blockEl = (b) => blockEls[b];
-function markBookmarks() {
-  document.querySelectorAll(".blk.bm").forEach((el) => el.classList.remove("bm"));
-  for (const m of doc.bookmarks || []) blockEl(m.b)?.classList.add("bm");
+/* Bookmarks: a bar in the margin beside every line of bookmarked text. Hover it to see the text,
+   click it to read from there. A bookmark keeps its first word and its text; where it ends is
+   worked out by walking the words until they've used up the text. */
+let bmEnds = new Map(); // bookmark "at" -> {b, w} of its last word
+function bookmarkEnd(m) {
+  const key = doc.id + "|" + m.at + "|" + m.t;
+  if (bmEnds.has(key)) return bmEnds.get(key);
+  const need = fold(m.t || "").length;
+  let end = { b: m.b, w: m.w }, got = 0;
+  for (let b = m.b; b < doc.blocks.length && got < need; b++) {
+    const ws = doc.blocks[b].w;
+    for (let w = b === m.b ? m.w : 0; w < ws.length && got < need; w++) {
+      got += fold(plain(ws[w])).length;
+      end = { b, w };
+    }
+  }
+  bmEnds.set(key, end);
+  return end;
 }
+function markBookmarks() {
+  document.querySelectorAll(".bm-bar").forEach((el) => el.remove());
+  document.querySelectorAll(".blk.bm").forEach((el) => el.classList.remove("bm"));
+  if (!doc || $("#reader").hidden) return;
+  const bars = [];
+  for (const m of doc.bookmarks || []) { // measure everything first, then add the bars
+    const z = bookmarkEnd(m);
+    for (let b = m.b; b <= z.b; b++) {
+      const el = blockEl(b);
+      if (!el) continue; // not on the page
+      const first = wordEl(b, b === m.b ? m.w : 0), last = wordEl(b, b === z.b ? z.w : doc.blocks[b].w.length - 1);
+      if (!first || !last) continue;
+      const box = el.getBoundingClientRect(), lr = last.getClientRects();
+      const inset = parseFloat(getComputedStyle(el).fontSize) * 0.12;
+      const top = first.getClientRects()[0].top - box.top + inset;
+      const bottom = lr[lr.length - 1].bottom - box.top - inset;
+      bars.push({ el, top, height: Math.max(4, bottom - top), m });
+    }
+  }
+  for (const { el, top, height, m } of bars) {
+    el.classList.add("bm");
+    const bar = document.createElement("i");
+    bar.className = "bm-bar";
+    bar.dataset.at = m.at;
+    bar.style.top = top + "px";
+    bar.style.height = height + "px";
+    el.append(bar);
+  }
+}
+let shownMark = [];
+const markHighlight = window.Highlight && CSS.highlights ? new Highlight() : null; // tints the spaces too
+if (markHighlight) CSS.highlights.set("bm-show", markHighlight);
+function showMark(at) { // light up the bookmarked words
+  shownMark.forEach((el) => el.classList.remove("bm-show"));
+  shownMark = [];
+  markHighlight?.clear();
+  const m = at != null && (doc?.bookmarks || []).find((x) => x.at === at);
+  if (!m) return;
+  const z = bookmarkEnd(m);
+  for (let b = m.b; b <= z.b; b++) {
+    if (!blockEl(b)) continue;
+    const from = b === m.b ? m.w : 0, to = b === z.b ? z.w : doc.blocks[b].w.length - 1;
+    for (let w = from; w <= to; w++) {
+      const el = wordEl(b, w);
+      if (el) { el.classList.add("bm-show"); shownMark.push(el); }
+    }
+    const first = wordEl(b, from), last = wordEl(b, to);
+    if (markHighlight && first && last) { // one band per paragraph, from the first word to the last
+      const r = new Range();
+      r.setStartBefore(first);
+      r.setEndAfter(last);
+      markHighlight.add(r);
+    }
+  }
+}
+$("#blocks").addEventListener("mouseover", (e) => {
+  const bar = e.target.closest(".bm-bar");
+  showMark(bar ? +bar.dataset.at : null);
+});
+$("#blocks").addEventListener("mouseleave", () => showMark(null));
+$("#blocks").addEventListener("click", (e) => {
+  const bar = e.target.closest(".bm-bar");
+  const m = bar && doc.bookmarks.find((x) => x.at === +bar.dataset.at);
+  if (!m) return;
+  e.stopPropagation();
+  showMark(null);
+  leapTo(m.b, m.w);
+}, true);
 function wordEl(b, w) {
   if (!wordElCache.has(b)) {
     const el = blockEl(b);
@@ -503,16 +589,37 @@ function setPos(b, w, opts = {}) {
     blockEl(b + 1)?.classList.add("near");
   }
   const instant = opts.instant || jumped;
+  $("#cursor").classList.remove("gone");
+  $("#band").classList.remove("gone");
   placeCursor(instant);
-  if (!document.body.classList.contains("browsing") || opts.recenter) centerView(instant);
+  if ((!document.body.classList.contains("browsing") && !viewHeld()) || opts.recenter) centerView(instant);
+  if (marking) paintMark();
   updateProgress();
   saveTimer ||= setTimeout(savePos, 3000); // also saves during long hands-free reading
   if (!playing) prepare();
 }
 
-let lastCursorTop = null;
+/* While you're selecting text, or have some selected, the page stays still (reading carries on), so the
+   text and its Copy / Bookmark buttons don't slide away under the mouse. It catches up once the selection
+   is gone. */
+let pressing = false; // mouse button down on the text
+const hasSelection = () => { const s = getSelection(); return !s.isCollapsed && s.rangeCount > 0 && $("#blocks").contains(s.getRangeAt(0).commonAncestorContainer); };
+const viewHeld = () => pressing || hasSelection();
+$("#stage").addEventListener("pointerdown", (e) => { if (e.button === 0) pressing = true; });
+window.addEventListener("pointerup", () => {
+  if (!pressing) return;
+  pressing = false;
+  setTimeout(catchUp, 0); // after the click has had its say (a click on a word jumps there itself)
+});
+function catchUp() {
+  if (!doc || $("#reader").hidden || viewHeld()) return;
+  if (document.body.classList.contains("browsing")) armRefocus();
+  else if (playing) centerView(false);
+}
+
+let lastCursorTop = null, lastBandTop = null;
 // The words sharing a line with the current word get .line; those already read get .read too.
-let lineEls = [], lineKey = "";
+let lineEls = [], lineKey = "", bandKey = "";
 function markLine(el) {
   const tol = settings.size * 0.3;
   const key = `${pos.b}:${Math.round(el.offsetTop / tol)}`;
@@ -526,7 +633,63 @@ function markLine(el) {
   }
   for (const e of lineEls) e.classList.toggle("read", +e.dataset.i < pos.w);
 }
-function resetLine() { lineEls.forEach((e) => e.classList.remove("line", "read")); lineEls = []; lineKey = ""; }
+function resetLine() { lineEls.forEach((e) => e.classList.remove("line", "read")); lineEls = []; lineKey = ""; bandKey = ""; lastBandTop = null; }
+
+// Focus band behind #cursor:
+// - Reveal: recessed surface wrapping the current line (Line focus) or paragraph (Paragraph focus).
+// - Underline (guide="highlight"): quiet vertical margin tick beside the current line in Line focus.
+function placeBand(r, docRect, fs, padX, padY, instant) {
+  const band = $("#band");
+  const isReveal = settings.guide === "reveal";
+  const isLine = settings.focus === "line";
+  if (!curBlockEl || (!isReveal && !isLine)) { band.classList.remove("on"); bandKey = ""; lastBandTop = null; return; }
+  const key = isLine ? `${isReveal ? "rl" : "ul"}:${lineKey}` : `rp:${pos.b}`;
+  if (!instant && key === bandKey) return;
+  let x, y, w, h;
+  if (isLine) {
+    const tol = fs * 0.35, midY = (r.top + r.bottom) / 2;
+    let minL = r.left, maxR = r.right, minT = r.top, maxB = r.bottom;
+    for (const e of lineEls) {
+      for (const rect of e.getClientRects()) {
+        if (Math.abs((rect.top + rect.bottom) / 2 - midY) < tol) {
+          if (rect.left < minL) minL = rect.left;
+          if (rect.right > maxR) maxR = rect.right;
+          if (rect.top < minT) minT = rect.top;
+          if (rect.bottom > maxB) maxB = rect.bottom;
+        }
+      }
+    }
+    if (isReveal) {
+      const inset = 0.11 * fs;
+      const bPadX = padX + inset, bPadY = padY + inset;
+      x = minL - docRect.left - bPadX;
+      y = minT - docRect.top - bPadY;
+      w = maxR - minL + bPadX * 2;
+      h = maxB - minT + bPadY * 2;
+    } else {
+      const tickGap = Math.round(fs * 0.44), tickInset = Math.round(fs * 0.16);
+      x = minL - docRect.left - tickGap;
+      y = minT - docRect.top + tickInset;
+      w = 2.5;
+      h = Math.max(8, maxB - minT - tickInset * 2);
+    }
+  } else {
+    const br = curBlockEl.getBoundingClientRect();
+    const bPadX = 0.36 * fs, bPadY = 0.24 * fs;
+    x = br.left - docRect.left - bPadX;
+    y = br.top - docRect.top - bPadY;
+    w = br.width + bPadX * 2;
+    h = br.height + bPadY * 2;
+  }
+  const far = lastBandTop === null || Math.abs(y - lastBandTop) >= fs * 5;
+  band.classList.toggle("jump", !!instant || far);
+  band.style.transform = `translate(${x}px, ${y}px)`;
+  band.style.width = w + "px";
+  band.style.height = h + "px";
+  band.classList.add("on");
+  bandKey = key;
+  lastBandTop = y;
+}
 
 let nowEl = null;
 function placeCursor(instant) {
@@ -537,14 +700,20 @@ function placeCursor(instant) {
   markLine(el);
   const docRect = $("#doc").getBoundingClientRect();
   const r = el.getClientRects()[0] || el.getBoundingClientRect();
-  const padX = 0.16 * settings.size, padY = 0.04 * settings.size;
-  const x = r.left - docRect.left - padX, y = r.top - docRect.top - padY;
+  const fs = settings.size * (curBlockEl?.classList.contains("k-h1") ? 1.2 : curBlockEl?.classList.contains("k-h2") ? 1.1 : 1);
+  const isReveal = settings.guide === "reveal";
+  const padX = (isReveal ? 0.16 : 0.04) * fs, padY = 0.05 * fs;
+  const x = r.left - docRect.left - padX;
+  const y = isReveal ? r.top - docRect.top - padY : r.bottom - docRect.top;
+  const h = isReveal ? r.height + padY * 2 : Math.max(2.5, Math.round(fs * 0.13 * 2) / 2);
   const lineChange = lastCursorTop !== null && Math.abs(y - lastCursorTop) > 4;
   cur.classList.toggle("jump", !!instant || lineChange);
   cur.style.transform = `translate(${x}px, ${y}px)`;
   cur.style.width = r.width + padX * 2 + "px";
-  cur.style.height = r.height + padY * 2 + "px";
+  cur.style.height = h + "px";
   lastCursorTop = y;
+  placeBand(r, docRect, fs, padX, padY, instant);
+  syncScoutWithCursor();
 }
 
 let scrollAnim = null;
@@ -568,18 +737,42 @@ function centerView(instant) {
   if (Math.abs(target - stage.scrollTop) < 2) return;
   scrollTo(target, instant ? 0 : settings.focus === "line" ? 380 : 520);
 }
-let anim = null; // the scroll in progress: {from, target}
+/* The glide is a cubic curve from where the page is to the target: p(k) = from + m0·(k³−2k²+k) + d·(3k²−2k³),
+   ending at rest. From rest, m0 = 3d, which is the usual ease-out. If the target changes mid-glide, the new
+   glide starts at the speed the page is already moving, so it never jolts. (Restarting the ease-out on
+   every word made the page lurch and brake while it was still moving: the slight shaking.) */
+let anim = null; // the glide in progress: {from, target, m0, t0, ms}
+const glidePos = (a, k) => a.from + a.m0 * (k * k * k - 2 * k * k + k) + (a.target - a.from) * (3 * k * k - 2 * k * k * k);
+function glideSpeed(a, now) { // px per ms
+  const k = Math.max(0, (now - a.t0) / a.ms);
+  if (k >= 1) return 0;
+  return (a.m0 * (3 * k * k - 4 * k + 1) + (a.target - a.from) * (6 * k - 6 * k * k)) / a.ms;
+}
+/* Safari keeps scrollTop in whole pixels, so a glide moves the text in 1 px hops, and the slow end of
+   the ease-out creeps along a pixel at a time with longer and longer gaps: the letters seem to twitch.
+   The text is nudged by what the rounding left over, so on screen it follows the curve exactly. */
+function setScroll(stage, p) {
+  stage.scrollTop = p;
+  const off = stage.scrollTop - p; // 0 where fractional scrolling works (Chrome)
+  $("#doc").style.transform = Math.abs(off) > 0.01 ? `translateY(${off}px)` : "";
+}
 function scrollTo(target, ms) {
   const stage = $("#stage");
+  if (ms && anim && Math.abs(target - anim.target) < 2) return; // already on its way there: let it finish
+  const now = performance.now();
+  const speed = anim ? glideSpeed(anim, now) : 0;
   cancelAnimationFrame(scrollAnim);
   anim = null;
   programmaticScroll = true;
-  if (!ms) { stage.scrollTop = target; requestAnimationFrame(() => (programmaticScroll = false)); return; }
-  const a = (anim = { from: stage.scrollTop, target }), t0 = performance.now();
-  const step = (now) => {
-    const k = Math.min(1, (now - t0) / ms);
-    const e = 1 - Math.pow(1 - k, 3);
-    stage.scrollTop = a.from + (a.target - a.from) * e;
+  if (!ms) { setScroll(stage, target); requestAnimationFrame(() => (programmaticScroll = false)); return; }
+  const from = stage.scrollTop, d = target - from;
+  let m0 = speed ? speed * ms : 3 * d;
+  if (Math.sign(m0) !== Math.sign(d)) m0 = 0; // was moving the other way: turn round from a standstill
+  else if (Math.abs(m0) > Math.abs(3 * d)) m0 = 3 * d; // faster would overshoot and come back
+  const a = (anim = { from, target, m0, t0: now, ms });
+  const step = (t) => {
+    const k = Math.min(1, Math.max(0, (t - a.t0) / a.ms));
+    setScroll(stage, k < 1 ? glidePos(a, k) : Math.round(a.target));
     if (k < 1) scrollAnim = requestAnimationFrame(step);
     else { anim = null; requestAnimationFrame(() => (programmaticScroll = false)); }
   };
@@ -600,6 +793,162 @@ function countWords() {
 function updateProgress() {
   const total = wordsBefore[doc.blocks.length];
   $("#progressFill").style.width = (total ? ((wordsBefore[pos.b] + pos.w) / total) * 100 : 0) + "%";
+  updateHere();
+}
+
+/* Away from the reading (scrolled by hand, or looking at a search match): a mark on the progress bar shows
+   where the text you're looking at is, and clicking the bar (or Esc) takes you back to where you're reading. */
+let hereFrame = 0;
+function updateHere() {
+  hereFrame = 0;
+  const away = isAway();
+  document.body.classList.toggle("away", away);
+  if (!away) return;
+  const stage = $("#stage"), y = stage.getBoundingClientRect().top + stage.clientHeight * 0.46;
+  let lo = parts[shown.from].start, hi = parts[shown.to].end - 1; // the first block on the page reaching the middle
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (blockEl(mid).getBoundingClientRect().bottom < y) lo = mid + 1; else hi = mid; }
+  const r = blockEl(lo).getBoundingClientRect();
+  const into = Math.min(1, Math.max(0, (y - r.top) / Math.max(1, r.height)));
+  const total = wordsBefore[doc.blocks.length] || 1;
+  $("#progressHere").style.left = ((wordsBefore[lo] + into * doc.blocks[lo].w.length) / total) * 100 + "%";
+}
+function isAway() {
+  if (!doc || $("#reader").hidden || !document.body.classList.contains("browsing") || shown.to < shown.from) return false;
+  const el = curBlockEl?.isConnected && wordEl(pos.b, pos.w);
+  if (!el) return true; // not even on the page
+  const stage = $("#stage"), sr = stage.getBoundingClientRect(), r = el.getBoundingClientRect();
+  return r.bottom < sr.top + stage.clientHeight * 0.16 || r.top > sr.top + stage.clientHeight * 0.8; // outside the clear band
+}
+$("#stage").addEventListener("scroll", () => { hereFrame ||= requestAnimationFrame(updateHere); }, { passive: true });
+
+/* The progress bar as a scrubber: hover it and it thickens, shows what's at that point, and a click jumps
+   there (to the start of that paragraph). Places that matter pull the pointer in when it comes close:
+   where you're reading, where you were before the last jump, bookmarks and headings. They fade in as the
+   pointer nears them. */
+let wasAt = null; // where you were before the last long jump: {b, w}
+function leapTo(b, w) {
+  if (b !== pos.b) wasAt = { ...pos };
+  document.body.classList.remove("browsing");
+  jumpTo(b, w);
+}
+const PULL = { pos: 18, was: 18, bm: 14, ch: 12, sec: 8 }; // how close (px) the pointer must come to be pulled in
+let pins = [], outline = null;
+/* Chapters and sections: the chapter level is the highest heading level used more than once (a lone top
+   heading is the title); sections are one level below. Deeper headings (e.g. "Chunk 3, pages 5 to 7") are left out. */
+function docOutline() {
+  const heads = [];
+  doc.blocks.forEach((blk, b) => { if (/^h\d$/.test(blk.k)) heads.push({ b, lv: +blk.k[1], t: blk.w.map(plain).join(" ") }); });
+  const count = {};
+  heads.forEach((h) => (count[h.lv] = (count[h.lv] || 0) + 1));
+  const lvs = Object.keys(count).map(Number).sort();
+  const chLv = lvs.find((l) => count[l] > 1) ?? lvs[0];
+  const chapters = heads.filter((h) => h.lv <= chLv), sections = heads.filter((h) => h.lv === chLv + 1);
+  return { chapters, sections };
+}
+function lastAtOrBefore(list, b) { let r = null; for (const h of list) { if (h.b > b) break; r = h; } return r; }
+function placeOf(b) { // {chapter, section} names for block b
+  const ch = lastAtOrBefore(outline.chapters, b), sec = lastAtOrBefore(outline.sections, b);
+  return { chapter: ch?.t || "", section: sec && (!ch || sec.b > ch.b) ? sec.t : "" };
+}
+// how long the voice takes from where you're reading to (b, w), at the current speed
+function timeTo(b, w) {
+  const from = wordsBefore[pos.b] + pos.w, to = wordsBefore[b] + w;
+  if (Math.abs(to - from) < 3) return "";
+  const m = Math.abs(to - from) / wordsPerMinute() + (Math.abs(b - pos.b) * PARAGRAPH_PAUSE) / 60;
+  const t = m < 1 ? "under a minute" : formatMinutes(m);
+  return to > from ? `in ${t}` : `${t} back`;
+}
+const join = (...xs) => xs.filter(Boolean).join(" · ");
+function progressPins() {
+  outline = docOutline();
+  const total = wordsBefore[doc.blocks.length] || 1, at = (b, w) => (wordsBefore[b] + w) / total;
+  const list = [{ kind: "pos", b: pos.b, w: pos.w, label: document.body.classList.contains("away") ? "Back to where you're reading" : "Where you're reading" }];
+  if (wasAt && wasAt.b !== pos.b && wasAt.b < doc.blocks.length) list.push({ kind: "was", ...wasAt, label: "Where you were" });
+  for (const m of doc.bookmarks || []) list.push({ kind: "bm", b: m.b, w: m.w, label: "Bookmark" });
+  for (const h of outline.chapters) list.push({ kind: "ch", b: h.b, w: 0, label: h.t });
+  for (const h of outline.sections) list.push({ kind: "sec", b: h.b, w: 0, label: h.t });
+  for (const p of list) p.x = at(p.b, p.w);
+  return list;
+}
+// what the tip says about a place
+function describe(t) {
+  const { chapter, section } = placeOf(t.b), time = timeTo(t.b, t.w);
+  if (t.kind === "pos") return { label: t.label, text: join(chapter, section) };
+  if (t.kind === "ch") return { label: t.label, text: time };
+  if (t.kind === "sec") return { label: t.label, text: join(chapter, time) };
+  if (t.kind) return { label: t.label, text: join(chapter, section, time) };
+  const pct = Math.round(((wordsBefore[t.b] + t.w) / (wordsBefore[doc.blocks.length] || 1)) * 100) + "%";
+  return { label: chapter || doc.title || "", text: join(section, time, pct) };
+}
+let scrubTarget = null;
+function scrub(e) {
+  if (!doc) return;
+  const bar = $("#progress"), width = bar.clientWidth, px = e.clientX;
+  if (!bar.classList.contains("scrub")) { // just came in: lay out the pins
+    bar.classList.add("scrub");
+    pins = progressPins();
+    $("#progressPins").innerHTML = pins.map((p) => `<i class="pin ${p.kind}" style="left:${(p.x * 100).toFixed(3)}%"></i>`).join("");
+  }
+  // the nearest pin that pulls hard enough, else the paragraph under the pointer
+  let best = null, bestPull = 1;
+  pins.forEach((p, i) => { const pull = Math.abs(p.x * width - px) / PULL[p.kind]; if (pull <= bestPull) { best = i; bestPull = pull; } });
+  const els = $("#progressPins").children;
+  pins.forEach((p, i) => {
+    const d = Math.abs(p.x * width - px);
+    els[i].style.opacity = p.kind === "pos" ? (i === best ? 1 : 0) : Math.max(0, Math.min(1, 1 - (d - 24) / 160)).toFixed(2);
+    els[i].classList.toggle("on", i === best);
+  });
+  const total = wordsBefore[doc.blocks.length] || 1;
+  if (best !== null) scrubTarget = pins[best];
+  else {
+    const idx = Math.max(0, Math.min(total - 1, (px / width) * total));
+    let lo = 0, hi = doc.blocks.length - 1; // the paragraph holding that word
+    while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (wordsBefore[mid] <= idx) lo = mid; else hi = mid - 1; }
+    scrubTarget = { kind: "", b: lo, w: 0, x: wordsBefore[lo] / total };
+  }
+  const x = best !== null ? pins[best].x * width : px;
+  $("#scrubLine").style.left = x + "px";
+  $("#scrubLine").className = scrubTarget.kind;
+  const tip = $("#scrubTip");
+  const { label, text } = describe(scrubTarget);
+  tip.innerHTML = `<strong>${esc(label)}</strong>${text ? `<span>${esc(text)}</span>` : ""}`;
+  tip.hidden = false;
+  const tw = tip.offsetWidth;
+  tip.style.left = Math.max(8, Math.min(innerWidth - tw - 8, x - tw / 2)) + "px";
+  tip.style.top = bar.getBoundingClientRect().bottom - 16 - 30 - tip.offsetHeight + "px"; // above the lifted bar
+}
+function endScrub() {
+  $("#progress").classList.remove("scrub");
+  $("#scrubTip").hidden = true;
+  scrubTarget = null;
+}
+$("#progress").addEventListener("pointermove", scrub);
+$("#progress").addEventListener("pointerleave", endScrub);
+$("#progress").addEventListener("wheel", (e) => { startBrowsing(); $("#stage").scrollTop += e.deltaY; }, { passive: true }); // the strip covers the bottom of the text: scroll it anyway
+$("#progress").addEventListener("click", (e) => {
+  e.stopPropagation();
+  const t = scrubTarget;
+  if (!t || !doc) return;
+  if (t.kind === "pos") endBrowsing(); // already there, unless you'd scrolled away
+  else leapTo(t.b, t.w);
+  endScrub();
+  scrub(e); // the pins have moved
+});
+
+// Show a word (a search match) without moving the reading position.
+function lookAt(b, w) {
+  document.body.classList.add("browsing");
+  clearTimeout(browseTimer);
+  showAround(b); // may take the reading position's part off the page; endBrowsing() brings it back
+  const gone = !curBlockEl?.isConnected;
+  $("#cursor").classList.toggle("gone", gone);
+  $("#band").classList.toggle("gone", gone);
+  const el = wordEl(b, w);
+  if (!el) return;
+  const stage = $("#stage"), sr = stage.getBoundingClientRect(), wr = el.getBoundingClientRect();
+  const target = Math.max(0, Math.round(stage.scrollTop + wr.top - sr.top + wr.height / 2 - stage.clientHeight * 0.44));
+  if (Math.abs(target - stage.scrollTop) >= 2) scrollTo(target, 0);
+  updateHere();
 }
 
 /* ---- time left: words remaining ÷ how fast this voice actually speaks at the chosen speed */
@@ -653,29 +1002,45 @@ function savePos() {
 let savedPos = "";
 window.addEventListener("pagehide", savePos);
 
-/* manual scrolling: brighten everything until reading resumes */
+/* manual scrolling: brighten everything until reading resumes. While reading goes on (hands-free, or
+   holding space), the page comes back to the reading once you've stopped scrolling for a moment. */
+const REFOCUS_MS = 1200; // after the last wheel event (the trackpad's coasting sends them too)
 let browseTimer = null;
 function startBrowsing() {
   if (programmaticScroll) return;
   document.body.classList.add("browsing");
+  armRefocus();
+  updateHere();
+}
+function armRefocus() {
   clearTimeout(browseTimer);
+  if (!holding || peeking) return; // not reading, or paused to look around: stay where you scrolled
+  browseTimer = setTimeout(() => {
+    if (!holding || peeking || $("#reader").hidden) return;
+    if (viewHeld()) return; // selecting: catchUp() does it once the selection is gone
+    endBrowsing();
+  }, REFOCUS_MS);
 }
 $("#stage").addEventListener("wheel", startBrowsing, { passive: true });
 $("#stage").addEventListener("touchmove", startBrowsing, { passive: true });
 function endBrowsing() {
+  clearTimeout(browseTimer);
   if (!document.body.classList.contains("browsing")) return;
   document.body.classList.remove("browsing");
   setPos(pos.b, pos.w); // back to where you're reading: also trims the parts added while scrolling
+  updateHere();
 }
 
-// Click a word to read from there. The jump waits a moment, in case it's a double-click
-// selecting the word (jumping first would scroll the word away from the second click).
+// Click a word (or the space right beside it) to read from there. The jump waits a moment, in case
+// it's a double-click selecting the word (jumping first would scroll the word away from the second click).
 let clickTimer = null;
 $("#blocks").addEventListener("click", (e) => {
   clearTimeout(clickTimer);
-  const w = e.target.closest(".w");
+  const blk = e.target.closest(".blk");
+  const w = e.target.closest(".w") || (blk && wordNearPoint(e.clientX, e.clientY, blk));
   if (!w || e.detail > 1 || !getSelection().isCollapsed) return; // selecting text, not a jump
   if (e.altKey) { e.stopPropagation(); addPronFor(w.textContent); return; }
+  pulseNib();
   clickTimer = setTimeout(() => {
     if (!getSelection().isCollapsed) return;
     document.body.classList.remove("browsing");
@@ -732,7 +1097,7 @@ let prepareTimer = null;
 function prepare() {
   clearTimeout(prepareTimer);
   prepareTimer = setTimeout(() => {
-    if (doc && !holding && voiceFor(doc.lang)?.installed) fetchSeg(pos.b, segAt(pos.b, pos.w)).catch(() => {});
+    if (doc && (!holding || peeking) && voiceFor(doc.lang)?.installed) fetchSeg(pos.b, segAt(pos.b, pos.w)).catch(() => {});
   }, 400);
 }
 
@@ -758,7 +1123,7 @@ function startTimeFor(data, seg, w) {
 }
 
 async function startReading() {
-  if (!doc || !holding) return;
+  if (!doc || !holding || peeking) return;
   const token = ++playToken;
   const seg = segAt(pos.b, pos.w);
   if (pos.w < seg.start) pos.w = seg.start;
@@ -841,7 +1206,7 @@ const onEnded = (e) => {
   playing = false;
   if (!cur) return;
   const n = nextSeg(cur.b, cur.seg);
-  if (!n) { setLocked(false); setStatus("The end."); holding = false; document.body.classList.remove("reading"); return; }
+  if (!n) { setLocked(false); setStatus("The end."); holding = false; document.body.classList.remove("reading"); scheduleRest(); return; }
   const pause = n.b !== cur.b ? 220 : 40; // a breath between paragraphs
   setPos(n.b, n.seg.start);
   const token = playToken;
@@ -861,6 +1226,7 @@ function stopReading() {
   holding = false;
   document.body.classList.remove("reading");
   pauseReading();
+  scheduleRest();
 }
 
 function jumpTo(b, w) {
@@ -885,9 +1251,23 @@ function unlockAudio() {
   players.forEach((p) => { p.src = url; p.play().catch(() => {}); });
 }
 
+/* After you let go, the focus waits a moment and then fades away, leaving only the highlighted
+   word: the page reads like a normal page, to scroll around and read on your own. */
+const REST_MS = 1000;
+let restTimer = null;
+function scheduleRest() {
+  clearTimeout(restTimer);
+  restTimer = setTimeout(() => { if (!holding) document.body.classList.add("rested"); }, REST_MS);
+}
+function wake() {
+  clearTimeout(restTimer);
+  document.body.classList.remove("rested");
+}
+
 function beginHold() {
   if (!doc || holding) return;
   unlockAudio();
+  wake();
   holding = true;
   closePanel();
   closeOutline();
@@ -901,42 +1281,57 @@ function endHold() {
   holding = false;
   document.body.classList.remove("reading");
   pauseReading();
+  scheduleRest();
 }
 
 /* Hands-free: double-tap space to lock reading on; tap once to stop.
-   Holding space while locked unlocks it, and reading then runs until you let go. */
+   Holding space while locked pauses: scroll, click or select while you hold, and when you let go
+   the page goes back to where you're reading (or to the word you clicked) and carries on. */
 const TAP_MS = 280;        // shorter than this is a tap, longer is a hold
 const DOUBLE_TAP_MS = 450; // max gap between the two taps
 let locked = false;
-let spaceDownAt = 0, spaceIsDown = false, lastTapAt = 0, unlockTimer = null;
+let peeking = false;       // hands-free, paused while space is held
+let spaceDownAt = 0, spaceIsDown = false, lastTapAt = 0;
 
 function setLocked(on) {
   if (locked === on) return;
   locked = on;
   document.body.classList.toggle("locked", on);
+  if (!on) setPeeking(false);
+  setStatus(null);
+}
+function setPeeking(on) {
+  if (peeking === on) return;
+  peeking = on;
+  document.body.classList.toggle("peeking", on);
+  if (on) {
+    clearTimeout(browseTimer);
+    playToken++;
+    if (playing) audio.pause();
+    playing = false;
+    prepare();
+  }
   setStatus(null);
 }
 
 function spaceDown() {
   spaceIsDown = true;
   spaceDownAt = performance.now();
-  if (locked) {
-    // keep reading; if this turns into a hold, switch to normal hold-to-read
-    clearTimeout(unlockTimer);
-    unlockTimer = setTimeout(() => { if (spaceIsDown && locked) setLocked(false); }, TAP_MS);
-    return;
-  }
+  if (locked) { setPeeking(true); return; } // pause at once: a tap stops, a hold resumes on release
   beginHold();
 }
 
 function spaceUp() {
   spaceIsDown = false;
-  clearTimeout(unlockTimer);
   const now = performance.now();
   const tap = now - spaceDownAt < TAP_MS;
-  if (locked) {           // any tap while locked stops (a hold already switched to hold-to-read)
+  if (locked) {
     lastTapAt = 0;
-    endHold();
+    if (tap) { endHold(); return; } // a tap while locked stops
+    setPeeking(false);              // let go after a hold: back to reading hands-free
+    if (document.body.classList.contains("browsing")) endBrowsing();
+    else if (!viewHeld()) centerView(false);
+    startReading();
     return;
   }
   const double = tap && now - lastTapAt < DOUBLE_TAP_MS;
@@ -960,9 +1355,11 @@ function setStatus(msg, busy) {
   if (performance.now() < flashUntil) return;
   if (!msg) {
     hold.classList.remove("busy");
-    $("#hintText").innerHTML = locked
-      ? "Reading hands-free · tap <kbd>space</kbd> or <kbd>esc</kbd> to stop"
-      : "Hold <kbd>space</kbd> to read · double-tap to lock";
+    $("#hintText").innerHTML = peeking
+      ? "Paused · scroll or click around · let go of <kbd>space</kbd> to carry on"
+      : locked
+        ? "Reading hands-free · tap <kbd>space</kbd> to stop · hold to pause"
+        : "Hold <kbd>space</kbd> to read · double-tap to lock";
     return;
   }
   hold.classList.add("busy");
@@ -980,7 +1377,7 @@ window.addEventListener("keydown", (e) => {
     return;
   }
   if ($("#reader").hidden || typing(e)) return;
-  if (!e.metaKey && !e.ctrlKey) hideSelPop();
+  if (!e.metaKey && !e.ctrlKey && !e.repeat) hideSelPop(); // not on auto-repeat: space held to pause keeps it
   if (e.code === "Space") {
     e.preventDefault();
     if (!e.repeat) spaceDown();
@@ -1018,11 +1415,12 @@ window.addEventListener("keydown", (e) => {
     case "=": case "+": changeRate(+0.05); break;
     case "m": case "M": setSetting("muted", !settings.muted); break;
     case "o": case "O": toggleOutline(); break;
-    case "b": case "B": bookmarkHere(); break;
+    case "b": case "B": if (!e.repeat) startMark(e.code); break;
     case "Escape":
       if (locked) { lastTapAt = 0; endHold(); } // first stop hands-free reading, stay on the page
       else if (!$("#outline").hidden) closeOutline();
       else if (!$("#panel").hidden) closePanel();
+      else if (document.body.classList.contains("away")) endBrowsing(); // back to where you're reading
       else location.hash = "";
       break;
   }
@@ -1030,10 +1428,12 @@ window.addEventListener("keydown", (e) => {
 window.addEventListener("keyup", (e) => {
   if (e.code === "Space") { e.preventDefault(); if (spaceIsDown) spaceUp(); }
   if (e.code === shiftCode) stopShift();
+  if (marking && e.code === marking.code) endMark();
 });
 // Losing focus ends hold-to-read (we'd never see the key being released),
 // but hands-free reading keeps going.
-const focusLost = () => { stopShift(); spaceIsDown = false; if (!locked) endHold(); };
+// Paused hands-free (space held) stops too, rather than starting again by itself later.
+const focusLost = () => { stopShift(); cancelMark(); spaceIsDown = false; if (!locked || peeking) endHold(); };
 
 // Holding Shift keeps changing the speed: one step now, then repeating after a short pause.
 // (macOS doesn't auto-repeat modifier keys, so we time it ourselves.)
@@ -1072,12 +1472,550 @@ if ("mediaSession" in navigator) {
   navigator.mediaSession.setActionHandler("pause", () => { lastTapAt = 0; endHold(); });
 }
 
-let pointerTimer = null;
-window.addEventListener("mousemove", () => {
+let pointerTimer = null, lastMouseX = NaN, lastMouseY = NaN;
+window.addEventListener("mousemove", (e) => {
+  if (e.clientX === lastMouseX && e.clientY === lastMouseY) return; // ignore synthetic events from auto-scroll under a still cursor
+  lastMouseX = e.clientX;
+  lastMouseY = e.clientY;
   document.body.classList.add("pointer-active");
   clearTimeout(pointerTimer);
-  pointerTimer = setTimeout(() => document.body.classList.remove("pointer-active"), 1500);
+  pointerTimer = setTimeout(() => {
+    document.body.classList.remove("pointer-active");
+    if (document.body.classList.contains("reading") && !peeking) clearPeekBlock();
+  }, 1500);
 });
+
+/* ------------------------------------------------------------------ pointer & tactile scout */
+
+const finePointer = matchMedia("(hover: hover) and (pointer: fine)");
+const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
+let customPtr = false;
+function syncCustomPointer() {
+  customPtr = finePointer.matches && !reducedMotion.matches;
+  document.body.classList.toggle("ptr-custom", customPtr);
+  if (!customPtr) hideStagePointer();
+}
+finePointer.addEventListener("change", syncCustomPointer);
+reducedMotion.addEventListener("change", syncCustomPointer);
+
+let ptrDown = false, ptrSelecting = false, ptrInStage = false, downX = 0, downY = 0;
+let px = 0, py = 0;
+let hx = 0, hy = 0, hvx = 0, hvy = 0, hAng = 0, haloReady = false, haloOn = false;
+let sx = 0, sy = 0, sw = 0, sh = 0, svx = 0, svy = 0, svw = 0, svh = 0;
+let stx = 0, sty = 0, stw = 0, sth = 0, scoutReady = false, scoutOn = false;
+let hoverWord = null, hoverBlk = null, pendingBlk = null, hoverBm = false;
+let ptrWordVisual = false, ptrSettled = false;
+let peekTimer = null, nibGraceTimer = null, nibSettleTimer = null;
+let ptrFrame = 0, ptrLastT = 0;
+const wakeTimers = new Map();
+
+// 8-segment closed cubic Bézier shapes (50 numbers each) aligned clockwise from top (Seg 0=top, 2=right, 4=bottom, 6=left)
+// so #ptrNib liquid-morphs cleanly with zero twisting: dot ↔ right-pointing playhead ↔ vertical caret / bookmark pill.
+const NIB_DOT = [-1.15, -2.77, -0.41, -3.08, 0.41, -3.08, 1.15, -2.77, 1.88, -2.47, 2.47, -1.88, 2.77, -1.15, 3.08, -0.41, 3.08, 0.41, 2.77, 1.15, 2.47, 1.88, 1.88, 2.47, 1.15, 2.77, 0.41, 3.08, -0.41, 3.08, -1.15, 2.77, -1.88, 2.47, -2.47, 1.88, -2.77, 1.15, -3.08, 0.41, -3.08, -0.41, -2.77, -1.15, -2.47, -1.88, -1.88, -2.47, -1.15, -2.77];
+// Soft-rounded right-pointing playhead (~8.2w × 9.3h): flat back edge sits just behind hotspot (-2.0), pointing forward (+6.2)
+const NIB_PLAY = [-2.0, -3.55, -2.0, -4.39, -1.55, -4.65, -0.82, -4.24, 1.36, -3.03, 3.53, -1.82, 5.71, -0.61, 6.38, -0.23, 6.38, 0.23, 5.71, 0.61, 3.53, 1.82, 1.36, 3.03, -0.82, 4.24, -1.55, 4.65, -2.0, 4.39, -2.0, 3.55, -2.0, 2.76, -2.0, 1.97, -2.0, 1.18, -2.0, 0.39, -2.0, -0.39, -2.0, -1.18, -2.0, -1.97, -2.0, -2.76, -2.0, -3.55];
+function makePillPts(w, h) {
+  const rx = w / 2, ry = Math.min(rx, h / 2), yT = -h / 2 + ry, yB = h / 2 - ry, ha = (4 / 3) * ry;
+  const y1 = yT + (yB - yT) / 3, y2 = yT + 2 * (yB - yT) / 3;
+  const seg = (x0, y0, x1, y1b) => [x0 + (x1 - x0) / 3, y0 + (y1b - y0) / 3, x0 + 2 * (x1 - x0) / 3, y0 + 2 * (y1b - y0) / 3, x1, y1b];
+  return [
+    -rx, yT, -rx, yT - ha, rx, yT - ha, rx, yT,
+    ...seg(rx, yT, rx, y1), ...seg(rx, y1, rx, y2), ...seg(rx, y2, rx, yB),
+    rx, yB + ha, -rx, yB + ha, -rx, yB,
+    ...seg(-rx, yB, -rx, y2), ...seg(-rx, y2, -rx, y1), ...seg(-rx, y1, -rx, yT),
+  ];
+}
+const NIB_BM = makePillPts(3.5, 14);
+const nibCur = NIB_DOT.slice();
+const nibVel = new Float32Array(50);
+let nibTarget = NIB_DOT;
+let nibShapeKey = "dot";
+let nibStiff = 520, nibDamp = 38;
+
+function applyNibPath() {
+  let d = `M${nibCur[0].toFixed(2)},${nibCur[1].toFixed(2)}`;
+  for (let i = 2; i < 50; i += 6) {
+    d += `C${nibCur[i].toFixed(2)},${nibCur[i + 1].toFixed(2)} ${nibCur[i + 2].toFixed(2)},${nibCur[i + 3].toFixed(2)} ${nibCur[i + 4].toFixed(2)},${nibCur[i + 5].toFixed(2)}`;
+  }
+  $("#ptrNibPath").setAttribute("d", d + "Z");
+}
+function setNibShape(key, pts, stiff = 520, damp = 38) {
+  if (key === nibShapeKey && pts === nibTarget) return;
+  nibShapeKey = key;
+  nibTarget = pts;
+  nibStiff = stiff;
+  nibDamp = damp;
+  if (reducedMotion.matches) {
+    for (let i = 0; i < 50; i++) { nibCur[i] = pts[i]; nibVel[i] = 0; }
+    applyNibPath();
+  } else {
+    kickPointerLoop();
+  }
+}
+applyNibPath();
+
+function springStep(cur, vel, target, stiffness, damping, dt) {
+  const acc = (target - cur) * stiffness - vel * damping;
+  vel += acc * dt;
+  cur += vel * dt;
+  return [cur, vel];
+}
+
+function rectDist(rc, x, y) {
+  const dx = x < rc.left ? rc.left - x : x > rc.right ? x - rc.right : 0;
+  const dy = y < rc.top ? rc.top - y : y > rc.bottom ? y - rc.bottom : 0;
+  return [dx, dy];
+}
+
+// Find the closest word inside blk to viewport point (x, y) within a small magnetic radius,
+// so gliding across spaces between words never drops out or flickers to an I-beam.
+function wordNearPoint(x, y, blk) {
+  if (!blk || !blk.isConnected) return null;
+  const b = +blk.dataset.b;
+  if (Number.isNaN(b)) return null;
+  wordEl(b, 0);
+  const words = wordElCache.get(b);
+  if (!words || !words.length) return null;
+  const fs = settings.size * (blk.classList.contains("k-h1") ? 1.2 : blk.classList.contains("k-h2") ? 1.1 : 1);
+  const maxDx = fs * 1.15, maxDy = fs * 0.65;
+
+  const scoreWord = (el) => {
+    let best = Infinity;
+    for (const rc of el.getClientRects()) {
+      const [dx, dy] = rectDist(rc, x, y);
+      if (dx <= maxDx && dy <= maxDy) {
+        const d = dx * dx + (dy * 2.2) * (dy * 2.2);
+        if (d < best) best = d;
+      }
+    }
+    return best;
+  };
+
+  // Fast path: horizontal sweep between adjacent words on the same line
+  if (hoverWord && hoverWord.parentElement === blk) {
+    const wi = +hoverWord.dataset.i;
+    let bestEl = null, bestD = Infinity;
+    for (const idx of [wi, wi - 1, wi + 1]) {
+      if (idx < 0 || idx >= words.length) continue;
+      const d = scoreWord(words[idx]);
+      if (d < bestD) { bestD = d; bestEl = words[idx]; }
+    }
+    if (bestEl && bestD <= (fs * 0.7) * (fs * 0.7)) return bestEl;
+  }
+
+  let bestEl = null, bestD = Infinity;
+  for (const el of words) {
+    const d = scoreWord(el);
+    if (d < bestD) { bestD = d; bestEl = el; }
+  }
+  return bestEl;
+}
+
+function wordBox(el, pyHint, fullPill = false) {
+  const docRect = $("#doc").getBoundingClientRect();
+  const rects = el.getClientRects();
+  let r = rects[0] || el.getBoundingClientRect();
+  if (rects.length > 1 && pyHint != null) {
+    let bestD = Infinity;
+    for (const rc of rects) {
+      const d = Math.abs((rc.top + rc.bottom) / 2 - pyHint);
+      if (d < bestD) { bestD = d; r = rc; }
+    }
+  }
+  const blk = el.closest(".blk");
+  const fs = settings.size * (blk?.classList.contains("k-h1") ? 1.2 : blk?.classList.contains("k-h2") ? 1.1 : 1);
+  const isReveal = fullPill || settings.guide === "reveal";
+  const padX = (isReveal ? 0.16 : 0.04) * fs;
+  const padY = 0.05 * fs;
+  const pacerH = Math.max(2.5, Math.round(fs * 0.13 * 2) / 2);
+  return {
+    x: r.left - docRect.left - padX,
+    y: isReveal ? r.top - docRect.top - padY : r.bottom - docRect.top,
+    w: r.width + padX * 2,
+    h: isReveal ? r.height + padY * 2 : Math.max(1.5, Math.round(pacerH * 0.6 * 2) / 2),
+  };
+}
+
+function wakeWord(el) {
+  if (!el || !el.isConnected || reducedMotion.matches || ptrSelecting || document.body.classList.contains("reading")) return;
+  if (Math.hypot(hvx, hvy) < 700) return; // only fill the gap on fast sweeps; never strobe at reading speed
+  const prev = wakeTimers.get(el);
+  if (prev) clearTimeout(prev);
+  el.classList.add("ptr-wake");
+  wakeTimers.set(el, setTimeout(() => {
+    el.classList.remove("ptr-wake");
+    wakeTimers.delete(el);
+  }, 110));
+}
+
+let nibPulseTimer = null;
+function pulseNib() {
+  if (!customPtr || reducedMotion.matches) return;
+  const nib = $("#ptrNib");
+  nib.classList.remove("pulse");
+  void nib.offsetWidth; // restart animation cleanly on rapid clicks
+  nib.classList.add("pulse");
+  clearTimeout(nibPulseTimer);
+  nibPulseTimer = setTimeout(() => nib.classList.remove("pulse"), 160);
+}
+
+function clearPeekBlock() {
+  clearTimeout(peekTimer);
+  peekTimer = null;
+  pendingBlk = null;
+  if (hoverBlk) { hoverBlk.classList.remove("ptr-blk"); hoverBlk = null; }
+}
+
+function schedulePeekBlock(blk) {
+  if (!blk) { clearPeekBlock(); return; }
+  if (blk === hoverBlk) { clearTimeout(peekTimer); peekTimer = null; pendingBlk = null; return; }
+  if (blk === pendingBlk) return;
+  clearTimeout(peekTimer);
+  pendingBlk = blk;
+  peekTimer = setTimeout(() => {
+    peekTimer = null;
+    if (pendingBlk !== blk || !blk.isConnected || !ptrInStage || ptrSelecting) return;
+    hoverBlk?.classList.remove("ptr-blk");
+    hoverBlk = blk;
+    hoverBlk.classList.add("ptr-blk");
+    pendingBlk = null;
+  }, 220);
+}
+
+function clearNibTimers() {
+  clearTimeout(nibGraceTimer);
+  nibGraceTimer = null;
+  clearTimeout(nibSettleTimer);
+  nibSettleTimer = null;
+  if (ptrSettled) { ptrSettled = false; $("#ptrNib").classList.remove("settled"); }
+}
+
+function armNibSettle() {
+  clearTimeout(nibSettleTimer);
+  nibSettleTimer = null;
+  if (ptrSettled) { ptrSettled = false; $("#ptrNib").classList.remove("settled"); }
+  if (!customPtr || !hoverWord || hoverWord === nowEl || ptrDown || ptrSelecting || hoverBm) return;
+  nibSettleTimer = setTimeout(() => {
+    nibSettleTimer = null;
+    if (hoverWord && hoverWord !== nowEl && ptrInStage && !ptrDown && !ptrSelecting && !hoverBm) {
+      ptrSettled = true;
+      $("#ptrNib").classList.add("settled");
+    }
+  }, 500);
+}
+
+function syncScoutWithCursor() {
+  const show = !!(hoverWord && hoverWord !== nowEl && !ptrSelecting && !hoverBm);
+  scoutOn = show;
+  const scout = $("#scout");
+  scout.classList.toggle("on", show);
+  scout.classList.toggle("press", !!(show && ptrDown && !reducedMotion.matches));
+  if (customPtr && ptrWordVisual && !ptrSelecting && !hoverBm) {
+    $("#ptrNib").classList.toggle("now-word", hoverWord === nowEl);
+  }
+}
+
+function applyScoutNow() {
+  const el = $("#scout");
+  el.style.transform = `translate3d(${sx.toFixed(2)}px, ${sy.toFixed(2)}px, 0)`;
+  el.style.width = sw.toFixed(2) + "px";
+  el.style.height = sh.toFixed(2) + "px";
+}
+
+function refreshScout(snap = false) {
+  if (!hoverWord || !hoverWord.isConnected) return;
+  const box = wordBox(hoverWord, py);
+  stx = box.x; sty = box.y; stw = box.w; sth = box.h;
+  if (snap || !scoutReady || !scoutOn || Math.hypot(stx - sx, sty - sy) > 280) {
+    sx = stx; sy = sty; sw = stw; sh = sth;
+    svx = svy = svw = svh = 0;
+    scoutReady = true;
+    applyScoutNow();
+  } else {
+    kickPointerLoop();
+  }
+}
+
+function setHoverWord(w, pyHint) {
+  if (w === hoverWord) {
+    if (w && !hoverBlk && !pendingBlk) schedulePeekBlock(w.closest(".blk"));
+    syncScoutWithCursor();
+    return;
+  }
+  const prev = hoverWord;
+  prev?.classList.remove("ptr-hover");
+  if (prev && w) wakeWord(prev); // trailing wake on fast sweeps; never fires on the word where you stop
+  hoverWord = w;
+  const blk = w ? w.closest(".blk") : null;
+  schedulePeekBlock(blk);
+  if (w) {
+    w.classList.add("ptr-hover");
+    const box = wordBox(w, pyHint);
+    const wasOff = !scoutOn || !scoutReady;
+    stx = box.x; sty = box.y; stw = box.w; sth = box.h;
+    if (wasOff || Math.hypot(stx - sx, sty - sy) > 280 || reducedMotion.matches) {
+      sx = stx; sy = sty; sw = stw; sh = sth;
+      svx = svy = svw = svh = 0;
+      scoutReady = true;
+      applyScoutNow();
+    } else {
+      kickPointerLoop();
+    }
+  }
+  syncScoutWithCursor();
+}
+
+function setSelecting(on) {
+  if (ptrSelecting === on) return;
+  ptrSelecting = on;
+  document.body.classList.toggle("ptr-selecting", on);
+  if (on) {
+    clearNibTimers();
+    ptrWordVisual = false;
+    setHoverWord(null);
+    hoverBm = false;
+  }
+}
+
+function hideStagePointer() {
+  ptrInStage = false;
+  ptrWordVisual = false;
+  clearNibTimers();
+  clearTimeout(nibPulseTimer);
+  document.body.classList.remove("ptr-live");
+  $("#ptrNib").classList.remove("on", "word", "down", "caret", "bm", "settled", "now-word", "pulse");
+  $("#ptrNibSquash").setAttribute("transform", "");
+  $("#ptrHalo").classList.remove("on", "down");
+  $("#scout").classList.remove("press");
+  nibShapeKey = "dot";
+  nibTarget = NIB_DOT;
+  for (let i = 0; i < 50; i++) { nibCur[i] = NIB_DOT[i]; nibVel[i] = 0; }
+  applyNibPath();
+  haloOn = false;
+  haloReady = false;
+  hoverBm = false;
+  setHoverWord(null);
+  clearPeekBlock();
+}
+
+function resetPointerHover() {
+  setSelecting(false);
+  ptrDown = false;
+  scoutReady = false;
+  hideStagePointer();
+  for (const [el, t] of wakeTimers) { clearTimeout(t); el.classList.remove("ptr-wake"); }
+  wakeTimers.clear();
+}
+
+function kickPointerLoop() {
+  if (ptrFrame || reducedMotion.matches) return;
+  ptrLastT = performance.now();
+  ptrFrame = requestAnimationFrame(stepPointer);
+}
+
+function stepPointer(now) {
+  ptrFrame = 0;
+  const dt = Math.min(0.032, Math.max(0.001, (now - ptrLastT) / 1000));
+  ptrLastT = now;
+  let active = false;
+
+  if (customPtr && haloReady) {
+    [hx, hvx] = springStep(hx, hvx, px, 275, 26, dt);
+    [hy, hvy] = springStep(hy, hvy, py, 275, 26, dt);
+    const spd = Math.hypot(hvx, hvy);
+    if (spd > 12) hAng = Math.atan2(hvy, hvx);
+    const stretch = Math.min(0.4, Math.max(0, spd - 60) / 1850);
+    const base = ptrDown ? 0.84 : 1;
+    const scaleX = base * (1 + stretch);
+    const scaleY = base * (1 - stretch * 0.44);
+    $("#ptrHalo").style.transform = `translate3d(${hx.toFixed(2)}px, ${hy.toFixed(2)}px, 0) rotate(${hAng.toFixed(3)}rad) scale(${scaleX.toFixed(3)}, ${scaleY.toFixed(3)})`;
+    // Subtle directional squash-and-stretch (±8% max) on the playhead while sweeping across words,
+    // keeping ▸ strictly oriented rightward via rotate(a) scale(sx, sy) rotate(-a)
+    const squashEl = $("#ptrNibSquash");
+    if (ptrWordVisual && !ptrSelecting && !hoverBm && spd > 80) {
+      const ns = Math.min(0.08, (spd - 80) / 3000);
+      const deg = (hAng * 180) / Math.PI;
+      squashEl.setAttribute("transform", `rotate(${deg.toFixed(1)}) scale(${(1 + ns).toFixed(3)}, ${(1 - ns * 0.6).toFixed(3)}) rotate(${(-deg).toFixed(1)})`);
+    } else if (squashEl.getAttribute("transform")) {
+      squashEl.setAttribute("transform", "");
+    }
+    if (Math.abs(px - hx) > 0.08 || Math.abs(py - hy) > 0.08 || spd > 0.8) active = true;
+  }
+
+  if (customPtr) {
+    let nibMoving = false;
+    for (let i = 0; i < 50; i++) {
+      const acc = (nibTarget[i] - nibCur[i]) * nibStiff - nibVel[i] * nibDamp;
+      nibVel[i] += acc * dt;
+      nibCur[i] += nibVel[i] * dt;
+      if (Math.abs(nibTarget[i] - nibCur[i]) > 0.02 || Math.abs(nibVel[i]) > 0.25) nibMoving = true;
+    }
+    if (nibMoving) { applyNibPath(); active = true; }
+    else if (nibCur[0] !== nibTarget[0]) {
+      for (let i = 0; i < 50; i++) { nibCur[i] = nibTarget[i]; nibVel[i] = 0; }
+      applyNibPath();
+    }
+  }
+
+  if (scoutOn && scoutReady) {
+    [sx, svx] = springStep(sx, svx, stx, 460, 38, dt);
+    [sy, svy] = springStep(sy, svy, sty, 460, 38, dt);
+    [sw, svw] = springStep(sw, svw, stw, 460, 38, dt);
+    [sh, svh] = springStep(sh, svh, sth, 460, 38, dt);
+    applyScoutNow();
+    if (
+      Math.abs(stx - sx) > 0.08 || Math.abs(sty - sy) > 0.08 ||
+      Math.abs(stw - sw) > 0.08 || Math.abs(sth - sh) > 0.08 ||
+      Math.abs(svx) > 0.8 || Math.abs(svy) > 0.8 || Math.abs(svw) > 0.8 || Math.abs(svh) > 0.8
+    ) active = true;
+  }
+
+  if (active) ptrFrame = requestAnimationFrame(stepPointer);
+}
+
+function blockFontSize(blk) {
+  return settings.size * (blk?.classList.contains("k-h1") ? 1.2 : blk?.classList.contains("k-h2") ? 1.1 : 1);
+}
+
+function applyStageTarget(target, altKey) {
+  const inStage = !!(target && target.closest && target.closest("#stage"));
+  if (!inStage) { hideStagePointer(); return; }
+  ptrInStage = true;
+
+  const activeBlk = target.closest(".blk") || hoverBlk || pendingBlk;
+  if (ptrDown && !ptrSelecting && (Math.hypot(px - downX, py - downY) > 4 || hasSelection())) {
+    setSelecting(true);
+  }
+
+  const nib = $("#ptrNib");
+  const halo = $("#ptrHalo");
+  if (customPtr) {
+    document.body.classList.add("ptr-live");
+    nib.style.transform = `translate3d(${px}px, ${py}px, 0)`;
+    if (!haloReady) {
+      hx = px; hy = py; hvx = hvy = 0; haloReady = true;
+      halo.style.transform = `translate3d(${hx}px, ${hy}px, 0)`;
+    }
+  }
+
+  if (ptrSelecting) {
+    setHoverWord(null);
+    hoverBm = false;
+    if (customPtr) {
+      const h = Math.min(50, Math.round(blockFontSize(activeBlk) * 1.1));
+      const key = "caret:" + h;
+      if (nibShapeKey !== key) setNibShape(key, makePillPts(1.8, h), 620, 42);
+      nib.className = "ptr-nib on caret";
+      halo.classList.remove("on", "down");
+      haloOn = false;
+    }
+  } else if (target.closest(".bm-bar")) {
+    clearNibTimers();
+    ptrWordVisual = false;
+    setHoverWord(null);
+    hoverBm = true;
+    if (customPtr) {
+      setNibShape("bm", NIB_BM, 520, 38);
+      nib.className = "ptr-nib on bm";
+      halo.classList.remove("on", "down");
+      haloOn = false;
+    }
+  } else {
+    hoverBm = false;
+    const direct = target.closest(".w");
+    const blk = direct ? direct.closest(".blk") : target.closest(".blk");
+    const w = direct || (blk && wordNearPoint(px, py, blk));
+    setHoverWord(w, py);
+    if (altKey != null) $("#scout").classList.toggle("alt", !!altKey);
+    if (customPtr) {
+      if (w) {
+        clearTimeout(nibGraceTimer);
+        nibGraceTimer = null;
+        ptrWordVisual = true;
+        setNibShape("play", NIB_PLAY, 480, 34);
+        const pulse = nib.classList.contains("pulse") ? " pulse" : "";
+        nib.className = "ptr-nib on word" + (w === nowEl ? " now-word" : "") + (ptrDown ? " down" : "") + pulse;
+        haloOn = false;
+        halo.classList.remove("on", "down");
+        armNibSettle();
+      } else {
+        clearTimeout(nibSettleTimer);
+        nibSettleTimer = null;
+        if (ptrSettled) { ptrSettled = false; nib.classList.remove("settled"); }
+        // Hold the playhead briefly across paragraph gaps so it doesn't flicker dot→▸→dot
+        if (ptrWordVisual && !nibGraceTimer) {
+          nibGraceTimer = setTimeout(() => {
+            nibGraceTimer = null;
+            if (!hoverWord && ptrInStage && !ptrSelecting && !hoverBm) {
+              ptrWordVisual = false;
+              setNibShape("dot", NIB_DOT, 340, 32);
+              nib.className = "ptr-nib on" + (ptrDown ? " down" : "");
+              haloOn = true;
+              halo.classList.add("on");
+              halo.classList.toggle("down", ptrDown);
+            }
+          }, 120);
+        } else if (!ptrWordVisual) {
+          setNibShape("dot", NIB_DOT, 340, 32);
+        }
+        const pulse = nib.classList.contains("pulse") ? " pulse" : "";
+        nib.className = "ptr-nib on" + (ptrWordVisual ? " word" : "") + (ptrDown ? " down" : "") + pulse;
+        const showHalo = !ptrWordVisual;
+        haloOn = showHalo;
+        halo.classList.toggle("on", showHalo);
+        halo.classList.toggle("down", ptrDown);
+      }
+    }
+  }
+  kickPointerLoop();
+}
+
+function updateStagePointer(e) {
+  if (e.pointerType === "touch") return;
+  if (!doc || $("#reader").hidden) { hideStagePointer(); return; }
+  // Ignore synthetic pointermove fired when auto-scroll shifts text beneath a stationary pointer
+  if (e.type === "pointermove" && e.clientX === px && e.clientY === py &&
+      document.body.classList.contains("reading") && !document.body.classList.contains("pointer-active") && !peeking) {
+    return;
+  }
+  px = e.clientX;
+  py = e.clientY;
+  applyStageTarget(e.target, e.altKey);
+}
+
+let ptrScrollFrame = 0;
+$("#stage").addEventListener("scroll", () => {
+  if (programmaticScroll || !ptrInStage || ptrSelecting || !doc || $("#reader").hidden) return;
+  if (document.body.classList.contains("reading") && !document.body.classList.contains("pointer-active") && !peeking) return;
+  ptrScrollFrame ||= requestAnimationFrame(() => {
+    ptrScrollFrame = 0;
+    if (programmaticScroll || !ptrInStage || ptrSelecting || !doc || $("#reader").hidden) return;
+    if (document.body.classList.contains("reading") && !document.body.classList.contains("pointer-active") && !peeking) return;
+    const hit = document.elementFromPoint(px, py);
+    if (hit) applyStageTarget(hit, null);
+  });
+}, { passive: true });
+
+window.addEventListener("pointermove", updateStagePointer, { passive: true });
+$("#stage").addEventListener("pointerdown", (e) => {
+  if (e.pointerType === "touch" || e.button !== 0) return;
+  ptrDown = true;
+  downX = e.clientX;
+  downY = e.clientY;
+  setSelecting(false);
+  updateStagePointer(e);
+});
+window.addEventListener("pointerup", (e) => {
+  if (!ptrDown && !ptrSelecting) return;
+  ptrDown = false;
+  setSelecting(false);
+  if (e.pointerType !== "touch") updateStagePointer(e);
+});
+document.addEventListener("pointerleave", hideStagePointer);
+window.addEventListener("blur", () => { ptrDown = false; setSelecting(false); hideStagePointer(); });
+window.addEventListener("keydown", (e) => { if (e.key === "Alt") $("#scout").classList.add("alt"); });
+window.addEventListener("keyup", (e) => { if (e.key === "Alt") $("#scout").classList.remove("alt"); });
+syncCustomPointer();
 
 /* ------------------------------------------------------------------ settings panel */
 
@@ -1141,7 +2079,7 @@ function setSetting(name, value) {
   saveSettings();
   applyLook();
   if (name === "muted") players.forEach((p) => (p.muted = value));
-  if (name === "size" || name === "font" || name === "focus" || name === "width") requestAnimationFrame(() => { resetLine(); placeCursor(true); centerView(true); });
+  if (name === "size" || name === "font" || name === "focus" || name === "guide" || name === "width") requestAnimationFrame(() => { resetLine(); placeCursor(true); centerView(true); markBookmarks(); refreshScout(true); });
 }
 
 document.querySelectorAll(".seg").forEach((seg) => seg.addEventListener("click", (e) => {
@@ -1203,8 +2141,7 @@ $("#outline").addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-b]");
   if (!btn) return;
   closeOutline();
-  document.body.classList.remove("browsing");
-  jumpTo(+btn.dataset.b, +(btn.dataset.w || 0));
+  leapTo(+btn.dataset.b, +(btn.dataset.w || 0));
 });
 
 /* ------------------------------------------------------------------ bookmarks, selection popup */
@@ -1223,6 +2160,55 @@ function bookmarkHere() {
   const seg = segAt(pos.b, pos.w);
   const text = doc.blocks[pos.b].w.slice(seg.start, seg.end).map(plain).join(" ");
   addBookmark(pos.b, seg.start, text).then(() => flash("Bookmarked · find it under contents (O)", 2000)).catch((err) => flash(err.message));
+}
+
+/* Hold B: the bookmark starts at the word being read and grows with the reading until you let go,
+   like selecting the passage. A tap bookmarks the sentence. */
+let marking = null; // {code, at, b, w, els, timer}
+function startMark(code) {
+  cancelMark();
+  marking = { code, at: performance.now(), b: pos.b, w: pos.w, els: [] };
+  marking.timer = setTimeout(() => { // a hold, not a tap: show what's being marked
+    if (!marking) return;
+    marking.shown = true;
+    paintMark();
+    flash("Bookmarking · let go of B to save", 60000);
+  }, TAP_MS);
+}
+function markRange(m) { // [first, last] in reading order
+  const a = { b: m.b, w: m.w }, z = { b: pos.b, w: pos.w };
+  return a.b < z.b || (a.b === z.b && a.w <= z.w) ? [a, z] : [z, a];
+}
+function paintMark() {
+  if (!marking.shown) return;
+  marking.els.forEach((el) => el.classList.remove("marking"));
+  marking.els = [];
+  const [a, z] = markRange(marking);
+  for (let b = a.b; b <= z.b; b++) {
+    if (!blockEl(b)) continue;
+    wordEl(b, 0);
+    const words = wordElCache.get(b);
+    const to = b === z.b ? z.w : words.length - 1;
+    for (let w = b === a.b ? a.w : 0; w <= to; w++) { words[w].classList.add("marking"); marking.els.push(words[w]); }
+  }
+}
+function cancelMark() {
+  if (!marking) return;
+  clearTimeout(marking.timer);
+  marking.els.forEach((el) => el.classList.remove("marking"));
+  if (marking.shown) { flashUntil = 0; setStatus(null); }
+  marking = null;
+}
+function endMark() {
+  const m = marking, held = m.shown;
+  const [a, z] = markRange(m);
+  cancelMark();
+  if (!held || (a.b === z.b && a.w === z.w)) { bookmarkHere(); return; } // a tap, or nothing was read meanwhile
+  const words = [];
+  for (let b = a.b; b <= z.b; b++) words.push(...doc.blocks[b].w.slice(b === a.b ? a.w : 0, b === z.b ? z.w + 1 : undefined).map(plain));
+  addBookmark(a.b, a.w, words.join(" "))
+    .then(() => flash(`Bookmarked ${words.length} words · find it under contents (O)`, 2000))
+    .catch((err) => flash(err.message));
 }
 
 // The selected words: {b, w} of the first one, and the text.
@@ -1260,7 +2246,14 @@ function showSelPop() {
 const hideSelPop = () => (selPop.hidden = true);
 
 document.addEventListener("mouseup", () => setTimeout(showSelPop, 0));
-document.addEventListener("selectionchange", () => { if (getSelection().isCollapsed) hideSelPop(); });
+const selHighlight = window.Highlight && CSS.highlights ? new Highlight() : null; // painted in place of the native selection (style.css)
+if (selHighlight) CSS.highlights.set("sel", selHighlight);
+document.addEventListener("selectionchange", () => {
+  const s = getSelection();
+  selHighlight?.clear();
+  if (selHighlight && s.rangeCount && !s.isCollapsed) selHighlight.add(s.getRangeAt(0).cloneRange());
+  if (s.isCollapsed) { hideSelPop(); if (!pressing) catchUp(); }
+});
 $("#stage").addEventListener("scroll", () => selPop.hidden || showSelPop(), { passive: true }); // follow the text
 selPop.addEventListener("mousedown", (e) => e.preventDefault()); // keep the selection
 selPop.addEventListener("click", async (e) => {
@@ -1327,8 +2320,7 @@ function showMatch() {
   $("#searchCount").textContent = !q ? "" : matches.length ? `${matchAt + 1} of ${matches.length}` : "No matches";
   if (matchAt < 0) return;
   const m = matches[matchAt];
-  document.body.classList.remove("browsing");
-  jumpTo(m.b, m.w);
+  lookAt(m.b, m.w); // the reading position stays: the progress bar shows the way back
   for (let w = m.w; w <= m.end; w++) { const el = wordEl(m.b, w); el.classList.add("hit"); hitEls.push(el); }
 }
 
@@ -1434,6 +2426,8 @@ window.addEventListener("resize", () => {
   resetLine();
   placeCursor(true);
   centerView(true);
+  markBookmarks();
+  refreshScout(true);
 });
 
 /* ------------------------------------------------------------------ routing */

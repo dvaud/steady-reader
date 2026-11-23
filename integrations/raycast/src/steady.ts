@@ -21,7 +21,7 @@ export const READABLE = [".pdf", ".docx", ".html", ".htm", ".md", ".markdown", "
 
 export function base() {
   const { url } = getPreferenceValues<Preferences>();
-  return (url || "http://localhost:8765").replace(/\/+$/, "");
+  return (url || "http://localhost:41737").replace(/\/+$/, "");
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

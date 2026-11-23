@@ -4,8 +4,8 @@ cd "$(dirname "$0")" || exit 1
 export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 
 # Already running? Just open it.
-if curl -s -o /dev/null --max-time 1 http://localhost:8765/api/voices; then
-  open http://localhost:8765
+if curl -s -o /dev/null --max-time 1 http://localhost:41737/api/voices; then
+  open http://localhost:41737
   exit 0
 fi
 

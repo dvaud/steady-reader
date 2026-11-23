@@ -359,7 +359,7 @@ def bookmarks(doc_id):
             w = max(0, min(w, len(doc["blocks"][b]["w"]) - 1))
             if not any(m["b"] == b and m["w"] == w for m in marks):
                 text = re.sub(r"\s+", " ", str(body["add"].get("t", ""))).strip()
-                marks.append({"b": b, "w": w, "t": text[:300], "at": int(time.time() * 1000)})
+                marks.append({"b": b, "w": w, "t": text[:2000], "at": int(time.time() * 1000)})
                 marks.sort(key=lambda m: (m["b"], m["w"]))
         if "remove" in body:
             doc["bookmarks"] = marks = [m for m in marks if m["at"] != body["remove"]]
@@ -443,7 +443,7 @@ def set_pron():
 
 if __name__ == "__main__":
     host = os.environ.get("HOST", "127.0.0.1")
-    port = int(os.environ.get("PORT", "8765"))
+    port = int(os.environ.get("PORT", "41737"))
     url = f"http://localhost:{port}"
     print(f"\n  Steady is running at {url}\n  (Ctrl+C to stop)\n")
     if IDLE_EXIT_MIN:

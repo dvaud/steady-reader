@@ -113,7 +113,7 @@ class VoiceStore:
                             f.write(chunk)
                             if suffix == "":
                                 self.progress[key]["done"] += len(chunk)
-                tmp.rename(dest)
+                tmp.replace(dest)
             self.progress.pop(key, None)
         except Exception as e:  # surfaced to the UI
             self.progress[key] = {"error": str(e)}
@@ -157,8 +157,11 @@ class VoiceStore:
             act_t: list[int] = []    # their start sample
             offset = 0
             for audio, phonemes, al in _synthesize(voice, text, model_rate):
-                # look for the last sound only shortly after the real speech, not in the added pause
-                spoken = sum(al[:len(phonemes) + 1 - len(_pause(voice))]) if al else None
+                # look for the last sound only shortly after the spoken phonemes, not in the EOS tail
+                last_spoken = len(phonemes)
+                while last_spoken > 0 and (phonemes[last_spoken - 1] == " " or phonemes[last_spoken - 1] in PAUSES):
+                    last_spoken -= 1
+                spoken = sum(al[:last_spoken + 1]) if al and last_spoken else None
                 audio, cut = _trim(audio, sr, tail=tail, until=None if spoken is None else spoken + int(0.15 * sr))
                 if al:
                     cum = al[0] - cut
@@ -239,9 +242,10 @@ def _wsola(x: np.ndarray, speed: float, sr: int, frame: float = 0.03, tol: float
     return (y / np.maximum(wsum, 1e-3))[:out_len]
 
 
-# Extra pauses after every sentence. At high speeds the voice otherwise ends the
-# audio while the last word is still sounding, and the word gets swallowed.
-END_PAUSE = [" ", "."] * 3
+# Minimum silent room kept on the end-of-sentence (EOS) token so the last word
+# finishes decaying even at high speeds (instead of appending fake ". . ." pause
+# phonemes, which are out-of-distribution for Piper/VITS and cause trailing "uh"/"hmm" moans).
+EOS_MIN_SECONDS = 0.12
 
 # Speeding the voice up shortens every sound by the same factor. But the end of a word
 # before a pause (comma, full stop, end of a line) is naturally drawn out, so it lost
@@ -257,7 +261,7 @@ PAUSES = set(",.;:!?…—")
 
 def _load_voice(path: Path):
     """Load a Piper voice whose model also reports how long each phoneme lasts (for
-    word timing) and accepts a duration factor per phoneme (for _ending_factors)."""
+    word timing) and accepts per-phoneme duration controls (for _ending_factors and EOS tail)."""
     from piper import PiperVoice
 
     try:
@@ -270,14 +274,19 @@ def _load_voice(path: Path):
         model = onnx.load(str(path))
         add_alignment_output(model)
         g = model.graph
-        # durations = ceil(predicted * length_scale)  ->  ceil(predicted * length_scale * dur_scale)
+        # durations = ceil(max(predicted * length_scale * dur_scale, dur_min))
         ceil = next(n for n in g.node if n.op_type == "Ceil")
         g.input.append(helper.make_tensor_value_info("dur_scale", TensorProto.FLOAT, [1, 1, None]))
         g.initializer.append(numpy_helper.from_array(np.ones((1, 1, 1), np.float32), "dur_scale"))
+        g.input.append(helper.make_tensor_value_info("dur_min", TensorProto.FLOAT, [1, 1, None]))
+        g.initializer.append(numpy_helper.from_array(np.zeros((1, 1, 1), np.float32), "dur_min"))
         mul = helper.make_node("Mul", [ceil.input[0], "dur_scale"], ["steady_dur_scaled"], name="SteadyDurScale")
+        clamp = helper.make_node("Max", ["steady_dur_scaled", "dur_min"], ["steady_dur_clamped"], name="SteadyDurMin")
         nodes = list(g.node)
-        nodes.insert(nodes.index(ceil), mul)
-        ceil.input[0] = "steady_dur_scaled"
+        idx = nodes.index(ceil)
+        nodes.insert(idx, mul)
+        nodes.insert(idx + 1, clamp)
+        ceil.input[0] = "steady_dur_clamped"
         del g.node[:]
         g.node.extend(nodes)
         opts = onnxruntime.SessionOptions()
@@ -290,10 +299,6 @@ def _load_voice(path: Path):
         return voice
     except Exception:  # unusual model: plain Piper (word endings not protected)
         return PiperVoice.load(str(path), include_alignments=True)
-
-
-def _pause(voice) -> list[str]:
-    return [p for p in END_PAUSE if p in voice.config.phoneme_id_map]
 
 
 def _is_mark(p: str) -> bool:
@@ -342,8 +347,8 @@ def _ending_factors(phonemes: list[str], rate: float) -> list[float]:
 
 
 def _synthesize(voice, text: str, rate: float):
-    """Like PiperVoice.synthesize at `rate`, with END_PAUSE added to each sentence and
-    word endings protected (see _ending_factors).
+    """Like PiperVoice.synthesize at `rate`, with word endings and the sentence-end
+    EOS silence tail protected (see _ending_factors and EOS_MIN_SECONDS).
 
     Yields (audio, phonemes, samples per phoneme with BOS first and EOS last, or None).
     """
@@ -353,24 +358,37 @@ def _synthesize(voice, text: str, rate: float):
     c = voice.config
     id_map = c.phoneme_id_map
     pad = len(id_map.get(PAD, []))
-    pause = _pause(voice)
     length_scale = (c.length_scale or 1.0) / rate
+    tail_scale = max(1.0, rate)
+    eos_min = float(max(1, round(EOS_MIN_SECONDS * c.sample_rate / c.hop_length)))
     for phonemes in voice.phonemize(text):
         if not phonemes:
             continue
-        phonemes = phonemes + pause
         ids = voice.phonemes_to_ids(phonemes)
         if getattr(voice, "steady_dur_scale", False):
+            factors = _ending_factors(phonemes, rate)
+            # Keep trailing punctuation at its natural (1x) length at high speeds.
+            for i in range(len(phonemes) - 1, -1, -1):
+                if phonemes[i] == " " or phonemes[i] in PAUSES:
+                    factors[i] = max(factors[i], tail_scale)
+                else:
+                    break
             per_id = [1.0] * (len(id_map[BOS]) + pad)
-            for p, f in zip(phonemes, _ending_factors(phonemes, rate)):
+            min_id = [0.0] * (len(id_map[BOS]) + pad)
+            for p, f in zip(phonemes, factors):
                 if p in id_map:
-                    per_id += [f] * (len(id_map[p]) + pad)
-            per_id += [1.0] * len(id_map[EOS])
+                    n = len(id_map[p]) + pad
+                    per_id += [f] * n
+                    min_id += [0.0] * n
+            eos_n = len(id_map[EOS])
+            per_id += [tail_scale] * eos_n
+            min_id += [eos_min] * eos_n
             args = {
                 "input": np.array([ids], dtype=np.int64),
                 "input_lengths": np.array([len(ids)], dtype=np.int64),
                 "scales": np.array([c.noise_scale, length_scale, c.noise_w_scale], dtype=np.float32),
                 "dur_scale": np.array(per_id[:len(ids)], dtype=np.float32).reshape(1, 1, -1),
+                "dur_min": np.array(min_id[:len(ids)], dtype=np.float32).reshape(1, 1, -1),
             }
             if c.num_speakers > 1:
                 args["sid"] = np.array([c.default_speaker_id], dtype=np.int64)
@@ -449,8 +467,9 @@ def _align(refs: list[list[str]], act: list[str], act_t: list[int]) -> list[int 
 def _trim(audio: np.ndarray, sr: int, lead: float = 0.04, tail: float = 0.2,
           until: int | None = None) -> tuple[np.ndarray, int]:
     """Cut long silences around a sentence and end it with exactly `tail` seconds
-    after the last sound (padding with silence if needed), so the end of the last
-    word is never lost when the next sentence starts. Returns (audio, samples cut at start)."""
+    after the last sound (keeping a brief natural decay, fading cleanly to zero,
+    and padding the rest with silence), so the end of the last word is never lost
+    and any late noise in the pause tail stays silent. Returns (audio, samples cut at start)."""
     if not len(audio):
         return audio, 0
     loud = np.flatnonzero(np.abs(audio[:until]) > 0.02 * (np.max(np.abs(audio)) or 1))
@@ -458,11 +477,13 @@ def _trim(audio: np.ndarray, sr: int, lead: float = 0.04, tail: float = 0.2,
         return audio, 0
     start = max(0, int(loud[0] - lead * sr))
     want = int(loud[-1] + tail * sr)
-    out = audio[start:want].copy()
-    fade = min(len(out), int(0.01 * sr))  # no click where the audio is cut
-    out[len(out) - fade:] *= np.linspace(1, 0, fade, dtype=out.dtype)
-    if want > len(audio):
-        out = np.concatenate([out, np.zeros(want - len(audio), dtype=out.dtype)])
+    keep = min(len(audio), int(loud[-1] + min(tail, 0.06) * sr))
+    out = audio[start:keep].copy()
+    fade = min(len(out), min(int(0.03 * sr), max(int(0.01 * sr), keep - int(loud[-1]) - int(0.02 * sr))))
+    if fade:
+        out[len(out) - fade:] *= np.linspace(1, 0, fade, dtype=out.dtype)
+    if want > keep:
+        out = np.concatenate([out, np.zeros(want - keep, dtype=out.dtype)])
     return out, start
 
 

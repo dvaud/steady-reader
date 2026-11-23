@@ -33,9 +33,15 @@ cd steady-reader
 uv run app.py
 ```
 
-Your browser opens at <http://localhost:8765>. The first start installs the Python
+Your browser opens at <http://localhost:41737>. The first start installs the Python
 packages (a minute or two). Each voice downloads once on first use (about 63 MB), and
 after that everything runs offline.
+
+**On Windows:** download `Steady-Windows.zip` from the latest release, unzip it anywhere and
+double-click `Steady.bat` (if Windows SmartScreen warns, choose **More info › Run anyway**). The
+first start installs uv and the packages by itself. To bring your library, voices and bookmarks,
+copy the `data` folder from your Mac into the unzipped folder. Keep its window open while you read; close it to stop. For OCR, install Tesseract
+with `winget install UB-Mannheim.TesseractOCR` (tick the extra languages you need in the installer).
 
 For scanned PDFs (OCR), also install Tesseract with its language packs:
 
@@ -50,7 +56,8 @@ Drop a file onto the page, paste a link, or paste any text (⌘V on the library 
 | Key | Action |
 | --- | --- |
 | hold **Space** | read (release to stop) |
-| double-tap **Space** | lock: keep reading hands-free (tap to stop; start holding to switch back to hold-to-read) |
+| double-tap **Space** | lock: keep reading hands-free (tap to stop) |
+| hold **Space** while locked | pause: scroll, click or select while you hold; let go to carry on reading hands-free |
 | ← / → | previous / next sentence |
 | ↑ / ↓ | previous / next paragraph |
 | left / right **Shift** | slower / faster (0.5× – 4×); hold to keep changing |
@@ -58,14 +65,15 @@ Drop a file onto the page, paste a link, or paste any text (⌘V on the library 
 | play / pause on headphones or the keyboard | start / stop hands-free reading |
 | O, or click the title | contents and bookmarks: jump to a heading or a bookmark |
 | B | bookmark the sentence you're on |
+| hold **B** | bookmark from the word being read until you let go, like selecting the passage |
 | ⌘F / Ctrl+F | search (Enter / Shift+Enter for next / previous, Esc to close and read from there) |
 | Option-click a word | teach the voice how to say it |
 | click a word | start from there |
 | select text | **Copy** or **Bookmark** it |
 | Esc | stop hands-free reading; otherwise back to the library |
 
-**Bookmarks:** select some text and choose **Bookmark** (or press B for the current
-sentence). In the text a bookmark is only a faint mark in the margin. Find them under
+**Bookmarks:** select some text and choose **Bookmark**, press B for the current
+sentence, or hold B while it reads to bookmark the passage until you let go. In the text a bookmark is only a faint mark in the margin. Find them under
 contents (O) for this document, or under **Bookmarks** on the library page for all of them.
 
 **Pronunciations:** if the voice says a name or term wrong, Option-click (Alt-click) it,
@@ -75,7 +83,9 @@ document in that language. Manage the list under **Aa → Pronunciations**.
 The sentence under the cursor is prepared while you look, so reading starts the moment
 you press Space. Hover over the speed at the top to see how much reading time is left at that speed.
 Your position in every document is saved. Scroll with the mouse to look around; holding
-Space brings you back to where you were.
+Space brings you back to where you were. While reading goes on, the page comes back by itself
+a moment after you stop scrolling. While you select text the page stays still, so the Copy and
+Bookmark buttons stay under the mouse; it catches up once the selection is gone.
 
 **Formats:** PDF (bold, italic, highlight annotations, headings, lists; running headers
 and page numbers removed), Word `.docx` (bold, italic, underline, highlights), HTML files

@@ -6,7 +6,7 @@
 #   --no-browser   only start Steady (the Obsidian and Raycast plugins do this first)
 #   --show HASH    open a page: "doc=ID", "doc=ID&at=B.W", or "" for the library
 DIR="__DIR__"
-URL="http://localhost:8765"
+URL="http://localhost:41737"
 LOG="$HOME/Library/Logs/Steady.log"
 export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 up() { curl -s -o /dev/null --max-time 1 "$URL/api/ping"; }
@@ -28,7 +28,7 @@ webapp() {
   for app in "$HOME/Applications"/*.app /Applications/*.app; do
     grep -qa "com.apple.Safari.WebApp" "$app/Contents/Info.plist" 2>/dev/null || continue
     case "$(basename "$app")" in *Steady*) echo "$app"; return ;; esac
-    grep -rqa "localhost:8765" "$app/Contents" 2>/dev/null && { echo "$app"; return; }
+    grep -rqa "localhost:41737" "$app/Contents" 2>/dev/null && { echo "$app"; return; }
   done
 }
 
