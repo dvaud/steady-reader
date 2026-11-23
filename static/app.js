@@ -1514,18 +1514,38 @@ const wakeTimers = new Map();
 const NIB_DOT = [-1.15, -2.77, -0.41, -3.08, 0.41, -3.08, 1.15, -2.77, 1.88, -2.47, 2.47, -1.88, 2.77, -1.15, 3.08, -0.41, 3.08, 0.41, 2.77, 1.15, 2.47, 1.88, 1.88, 2.47, 1.15, 2.77, 0.41, 3.08, -0.41, 3.08, -1.15, 2.77, -1.88, 2.47, -2.47, 1.88, -2.77, 1.15, -3.08, 0.41, -3.08, -0.41, -2.77, -1.15, -2.47, -1.88, -1.88, -2.47, -1.15, -2.77];
 // Soft-rounded right-pointing playhead (~8.2w × 9.3h): flat back edge sits just behind hotspot (-2.0), pointing forward (+6.2)
 const NIB_PLAY = [-2.0, -3.55, -2.0, -4.39, -1.55, -4.65, -0.82, -4.24, 1.36, -3.03, 3.53, -1.82, 5.71, -0.61, 6.38, -0.23, 6.38, 0.23, 5.71, 0.61, 3.53, 1.82, 1.36, 3.03, -0.82, 4.24, -1.55, 4.65, -2.0, 4.39, -2.0, 3.55, -2.0, 2.76, -2.0, 1.97, -2.0, 1.18, -2.0, 0.39, -2.0, -0.39, -2.0, -1.18, -2.0, -1.97, -2.0, -2.76, -2.0, -3.55];
-function makePillPts(w, h) {
+function fillPillPts(out, w, h, bend = 0) {
   const rx = w / 2, ry = Math.min(rx, h / 2), yT = -h / 2 + ry, yB = h / 2 - ry, ha = (4 / 3) * ry;
   const y1 = yT + (yB - yT) / 3, y2 = yT + 2 * (yB - yT) / 3;
-  const seg = (x0, y0, x1, y1b) => [x0 + (x1 - x0) / 3, y0 + (y1b - y0) / 3, x0 + 2 * (x1 - x0) / 3, y0 + 2 * (y1b - y0) / 3, x1, y1b];
-  return [
-    -rx, yT, -rx, yT - ha, rx, yT - ha, rx, yT,
-    ...seg(rx, yT, rx, y1), ...seg(rx, y1, rx, y2), ...seg(rx, y2, rx, yB),
-    rx, yB + ha, -rx, yB + ha, -rx, yB,
-    ...seg(-rx, yB, -rx, y2), ...seg(-rx, y2, -rx, y1), ...seg(-rx, y1, -rx, yT),
-  ];
+  const half = Math.max(1, h / 2);
+  const bx = (y) => bend * (y / half) * (y / half);
+  const dbx = (y) => (2 * bend * y) / (half * half);
+  let k = 0;
+  const put = (x, y) => { out[k++] = x; out[k++] = y; };
+  const seg = (sx, ya, yb) => {
+    const dy = yb - ya;
+    const xa = sx + bx(ya), xb = sx + bx(yb);
+    put(xa + (dbx(ya) * dy) / 3, ya + dy / 3);
+    put(xb - (dbx(yb) * dy) / 3, yb - dy / 3);
+    put(xb, yb);
+  };
+  const bxT = bx(yT), bxB = bx(yB);
+  const capT = dbx(yT) * ha, capB = dbx(yB) * ha;
+  put(-rx + bxT, yT);
+  put(-rx + bxT - capT, yT - ha);
+  put(rx + bxT - capT, yT - ha);
+  put(rx + bxT, yT);
+  seg(rx, yT, y1); seg(rx, y1, y2); seg(rx, y2, yB);
+  put(rx + bxB + capB, yB + ha);
+  put(-rx + bxB + capB, yB + ha);
+  put(-rx + bxB, yB);
+  seg(-rx, yB, y2); seg(-rx, y2, y1); seg(-rx, y1, yT);
+  return out;
 }
+const makePillPts = (w, h, bend = 0) => fillPillPts(new Array(50), w, h, bend);
 const NIB_BM = makePillPts(3.5, 14);
+const caretPts = new Array(50);
+let caretBaseH = 0;
 const nibCur = NIB_DOT.slice();
 const nibVel = new Float32Array(50);
 let nibTarget = NIB_DOT;
@@ -1774,12 +1794,15 @@ function setSelecting(on) {
     ptrWordVisual = false;
     setHoverWord(null);
     hoverBm = false;
+  } else {
+    caretBaseH = 0;
   }
 }
 
 function hideStagePointer() {
   ptrInStage = false;
   ptrWordVisual = false;
+  caretBaseH = 0;
   clearNibTimers();
   clearTimeout(nibPulseTimer);
   document.body.classList.remove("ptr-live");
@@ -1843,6 +1866,16 @@ function stepPointer(now) {
   }
 
   if (customPtr) {
+    if (ptrSelecting && nibShapeKey === "caret" && caretBaseH > 0 && !reducedMotion.matches) {
+      // Subtle liquid bend & stretch while dragging to select text: center stays pinned on the pointer
+      const bend = -Math.tanh(hvx / 460) * 2.55;
+      const vStretch = Math.tanh(Math.abs(hvy) / 600) * 0.17;
+      const hSquash = Math.tanh(Math.abs(hvx) / 760) * 0.068;
+      const eh = Math.min(54, caretBaseH * (1 + vStretch - hSquash));
+      const ew = 1.8 * (1 - vStretch * 0.35 + hSquash * 0.45);
+      fillPillPts(caretPts, ew, eh, bend);
+      nibTarget = caretPts;
+    }
     let nibMoving = false;
     for (let i = 0; i < 50; i++) {
       const acc = (nibTarget[i] - nibCur[i]) * nibStiff - nibVel[i] * nibDamp;
@@ -1851,9 +1884,13 @@ function stepPointer(now) {
       if (Math.abs(nibTarget[i] - nibCur[i]) > 0.02 || Math.abs(nibVel[i]) > 0.25) nibMoving = true;
     }
     if (nibMoving) { applyNibPath(); active = true; }
-    else if (nibCur[0] !== nibTarget[0]) {
-      for (let i = 0; i < 50; i++) { nibCur[i] = nibTarget[i]; nibVel[i] = 0; }
-      applyNibPath();
+    else {
+      let dirty = false;
+      for (let i = 0; i < 50; i++) {
+        if (nibCur[i] !== nibTarget[i]) { nibCur[i] = nibTarget[i]; dirty = true; }
+        nibVel[i] = 0;
+      }
+      if (dirty) applyNibPath();
     }
   }
 
@@ -1902,9 +1939,11 @@ function applyStageTarget(target, altKey) {
     setHoverWord(null);
     hoverBm = false;
     if (customPtr) {
-      const h = Math.min(50, Math.round(blockFontSize(activeBlk) * 1.1));
-      const key = "caret:" + h;
-      if (nibShapeKey !== key) setNibShape(key, makePillPts(1.8, h), 620, 42);
+      if (activeBlk || !caretBaseH) caretBaseH = Math.min(50, Math.round(blockFontSize(activeBlk) * 1.1));
+      if (nibShapeKey !== "caret") {
+        fillPillPts(caretPts, 1.8, caretBaseH, 0);
+        setNibShape("caret", caretPts, 400, 34);
+      }
       nib.className = "ptr-nib on caret";
       halo.classList.remove("on", "down");
       haloOn = false;
@@ -2230,22 +2269,276 @@ function selectedWords() {
 }
 
 const selPop = $("#selPop");
-function showSelPop() {
+const selGlide = selPop.querySelector(".sel-glide");
+let selAnchor = null; // pointer coordinates when selection finished
+let selPlace = null;  // active placement mode, kept stable while scrolling
+let selShownAt = 0;   // timestamp when #selPop appeared (brief grace before proximity dimming)
+let selLocked = false; // keep full clarity briefly during post-click confirmation
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const rectPointDist = (x, y, rx, ry, rw, rh) => {
+  const dx = x < rx ? rx - x : x > rx + rw ? x - (rx + rw) : 0;
+  const dy = y < ry ? ry - y : y > ry + rh ? y - (ry + rh) : 0;
+  return Math.hypot(dx, dy);
+};
+function selectionEndBlock(s) {
+  const endNode = s.range.endContainer;
+  const endBlkEl = (endNode.nodeType === 1 ? endNode : endNode.parentElement)?.closest(".blk");
+  return endBlkEl && +endBlkEl.dataset.b >= s.b ? +endBlkEl.dataset.b : s.b;
+}
+function clearSelPreview() {
+  document.body.classList.remove("sel-copy-hover");
+  document.querySelectorAll(".bm-bar.preview").forEach((el) => el.remove());
+  document.querySelectorAll(".blk.bm-preview").forEach((el) => el.classList.remove("bm-preview"));
+}
+function previewBookmarkSelection() {
+  clearSelPreview();
+  const s = selectedWords();
+  if (!s) return;
+  const endB = selectionEndBlock(s);
+  const bars = [];
+  for (let b = s.b; b <= endB; b++) {
+    const el = blockEl(b);
+    if (!el) continue;
+    wordEl(b, 0);
+    const ws = wordElCache.get(b) || [];
+    let first = null, last = null;
+    for (const w of ws) {
+      if (s.range.intersectsNode(w)) { if (!first) first = w; last = w; }
+    }
+    if (!first || !last) continue;
+    const fr = first.getClientRects()[0], lr = last.getClientRects();
+    if (!fr || !lr.length) continue;
+    const box = el.getBoundingClientRect();
+    const inset = parseFloat(getComputedStyle(el).fontSize) * 0.12;
+    const top = fr.top - box.top + inset;
+    const bottom = lr[lr.length - 1].bottom - box.top - inset;
+    bars.push({ el, top, height: Math.max(4, bottom - top) });
+  }
+  for (const { el, top, height } of bars) {
+    el.classList.add("bm-preview");
+    const bar = document.createElement("i");
+    bar.className = "bm-bar preview";
+    bar.style.top = top + "px";
+    bar.style.height = height + "px";
+    el.append(bar);
+  }
+}
+function moveSelGlide(btn) {
+  if (!btn) { selGlide.classList.remove("on"); return; }
+  const first = !selGlide.classList.contains("on");
+  selGlide.classList.toggle("jump", first);
+  selGlide.style.transform = `translate(${btn.offsetLeft}px, ${btn.offsetTop}px)`;
+  selGlide.style.width = btn.offsetWidth + "px";
+  selGlide.style.height = btn.offsetHeight + "px";
+  if (first) void selGlide.offsetWidth;
+  selGlide.classList.add("on");
+}
+function updateSelProximity(x, y) {
+  if (selPop.hidden || selPop.classList.contains("offscreen")) return;
+  if (selLocked || performance.now() - selShownAt < 900) {
+    selPop.style.setProperty("--pop-o", "1");
+    selPop.style.setProperty("--pop-s", "1");
+    return;
+  }
+  const rc = selPop.getBoundingClientRect();
+  const d = rectPointDist(x, y, rc.left, rc.top, rc.width, rc.height);
+  const t = clamp((d - 28) / 232, 0, 1);
+  selPop.style.setProperty("--pop-o", (1 - t * 0.46).toFixed(3));
+  selPop.style.setProperty("--pop-s", (1 - t * 0.025).toFixed(4));
+}
+function blockInlineBounds(b) {
+  const el = blockEl(b);
+  if (!el) return null;
+  wordEl(b, 0);
+  const ws = wordElCache.get(b);
+  const first = ws?.[0], last = ws?.[ws.length - 1];
+  const fr = first?.getClientRects()[0];
+  const lrs = last?.getClientRects(), lr = lrs?.[lrs.length - 1];
+  const br = el.getBoundingClientRect();
+  return { top: fr ? fr.top : br.top, bottom: lr ? lr.bottom : br.bottom };
+}
+function collectSelCandidates({ s, r, anchorRect, lastSelRect, refX, refY, hw, hh, measureStack, col, padEdge, safeTop, safeBot }) {
+  const endB = selectionEndBlock(s);
+  const startBounds = blockInlineBounds(s.b);
+  const endBounds = blockInlineBounds(endB) || startBounds;
+  const prevBounds = s.b > 0 ? blockInlineBounds(s.b - 1) : null;
+  const nextBounds = endB + 1 < doc.blocks.length ? blockInlineBounds(endB + 1) : null;
+
+  const candidates = [];
+  const add = (mode, x, y, w, h, stack, px, py) => {
+    candidates.push({ mode, x, y, w, h, stack, over: false, px, py, dist: rectPointDist(refX, refY, x, y, w, h) });
+  };
+
+  // 1. Inter-paragraph gap above the selection's starting paragraph
+  if (startBounds) {
+    const bandTop = prevBounds ? prevBounds.bottom + 1 : Math.max(safeTop, startBounds.top - hh - 24);
+    const bandBot = startBounds.top - 1;
+    const clampedTop = Math.max(safeTop, bandTop);
+    const gapH = bandBot - clampedTop;
+    if (gapH >= hh && bandBot <= safeBot) {
+      const y = prevBounds ? clampedTop + (gapH - hh) / 2 : Math.max(safeTop, bandBot - hh - 8);
+      const x = clamp(clamp(refX, r.left, r.right) - hw / 2, padEdge, innerWidth - hw - padEdge);
+      add("above", x, y, hw, hh, false, 0, 4);
+    }
+  }
+
+  // 2. Inter-paragraph gap below the selection's ending paragraph
+  if (endBounds) {
+    const bandTop = endBounds.bottom + 1;
+    const bandBot = nextBounds ? nextBounds.top - 1 : Math.min(safeBot, bandTop + hh + 24);
+    const clampedBot = Math.min(safeBot, bandBot);
+    const gapH = clampedBot - bandTop;
+    if (gapH >= hh && bandTop >= safeTop) {
+      const y = nextBounds ? bandTop + (gapH - hh) / 2 : Math.min(safeBot - hh, bandTop + 8);
+      const x = clamp(clamp(refX, r.left, r.right) - hw / 2, padEdge, innerWidth - hw - padEdge);
+      add("below", x, y, hw, hh, false, 0, -4);
+    }
+  }
+
+  // 3. Trailing whitespace at the end of a short line (no words to the right on that line, clear of adjacent lines)
+  const anchorBlk = blockEl(endB) && anchorRect === lastSelRect ? endB : s.b;
+  if (blockEl(anchorBlk)) {
+    wordEl(anchorBlk, 0);
+    const ws = wordElCache.get(anchorBlk) || [];
+    const midY = (anchorRect.top + anchorRect.bottom) / 2;
+    const tol = Math.max(8, anchorRect.height * 0.55);
+    const aPrev = anchorBlk > 0 ? blockInlineBounds(anchorBlk - 1) : null;
+    const aNext = anchorBlk + 1 < doc.blocks.length ? blockInlineBounds(anchorBlk + 1) : null;
+    let lineRight = anchorRect.right, aboveBot = aPrev ? aPrev.bottom : -Infinity, belowTop = aNext ? aNext.top : Infinity;
+    for (const el of ws) {
+      for (const rc of el.getClientRects()) {
+        const cy = (rc.top + rc.bottom) / 2;
+        if (Math.abs(cy - midY) < tol) {
+          if (rc.right > lineRight) lineRight = rc.right;
+        } else if (cy < midY && rc.bottom > aboveBot) {
+          aboveBot = rc.bottom;
+        } else if (cy > midY && rc.top < belowTop) {
+          belowTop = rc.top;
+        }
+      }
+    }
+    const inlineX = lineRight + 14;
+    const inlineY = midY - hh / 2;
+    if (inlineX + hw <= innerWidth - padEdge && inlineY >= safeTop && inlineY + hh <= safeBot &&
+        inlineY >= aboveBot + 1 && inlineY + hh <= belowTop - 1) {
+      add("inline", inlineX, inlineY, hw, hh, false, -4, 0);
+    }
+  }
+
+  // 4. Right page margin beside the selection
+  const rightStart = col.right + 16;
+  const rightSpace = innerWidth - padEdge - rightStart;
+  if (hw <= rightSpace) {
+    add("right", rightStart, clamp(refY - hh / 2, safeTop, safeBot - hh), hw, hh, false, -4, 0);
+  } else {
+    const { sw, sh } = measureStack();
+    if (sw <= rightSpace) add("right", rightStart, clamp(refY - sh / 2, safeTop, safeBot - sh), sw, sh, true, -4, 0);
+  }
+
+  // 5. Left page margin beside the selection (clears .bm-bar at -21px)
+  const leftEnd = col.left - 24;
+  const leftSpace = leftEnd - padEdge;
+  if (hw <= leftSpace) {
+    add("left", leftEnd - hw, clamp(refY - hh / 2, safeTop, safeBot - hh), hw, hh, false, 4, 0);
+  } else {
+    const { sw, sh } = measureStack();
+    if (sw <= leftSpace) add("left", leftEnd - sw, clamp(refY - sh / 2, safeTop, safeBot - sh), sw, sh, true, 4, 0);
+  }
+
+  return candidates;
+}
+function showSelPop(isScroll = false) {
   const s = selectedWords();
   if (!s || !s.text) return hideSelPop();
-  selPop.querySelector('[data-act="copy"]').textContent = "Copy";
-  selPop.querySelector('[data-act="mark"]').textContent = "Bookmark";
+  if (!isScroll || selPop.hidden) {
+    selPop.querySelector('[data-act="copy"]').textContent = "Copy";
+    selPop.querySelector('[data-act="mark"]').textContent = "Bookmark";
+  }
+  const wasHidden = selPop.hidden;
   selPop.hidden = false;
-  const r = s.range.getBoundingClientRect();
-  const w = selPop.offsetWidth, h = selPop.offsetHeight;
-  let top = r.top - h - 10;
-  if (top < 60) top = r.bottom + 10; // no room above (under the top bar): show it below
-  selPop.style.left = Math.max(8, Math.min(innerWidth - w - 8, r.left + r.width / 2 - w / 2)) + "px";
-  selPop.style.top = top + "px";
-}
-const hideSelPop = () => (selPop.hidden = true);
+  selPop.classList.remove("stack", "over");
+  const hw = selPop.offsetWidth, hh = selPop.offsetHeight;
+  let stacked = null;
+  const measureStack = () => {
+    if (!stacked) {
+      selPop.classList.add("stack");
+      stacked = { sw: selPop.offsetWidth, sh: selPop.offsetHeight };
+      selPop.classList.remove("stack");
+    }
+    return stacked;
+  };
 
-document.addEventListener("mouseup", () => setTimeout(showSelPop, 0));
+  const r = s.range.getBoundingClientRect();
+  const selRects = Array.from(s.range.getClientRects()).filter((rc) => rc.width > 0 || rc.height > 0);
+  const lastSelRect = selRects[selRects.length - 1] || r;
+  const padEdge = 10, safeTop = 58, safeBot = innerHeight - 72;
+
+  // Reference point: where the pointer just finished selecting (if still near the selection), else the selection end
+  let refX = lastSelRect.left + lastSelRect.width / 2;
+  let refY = lastSelRect.top + lastSelRect.height / 2;
+  if (!isScroll && selAnchor && rectPointDist(selAnchor.x, selAnchor.y, r.left, r.top, r.width, r.height) < 120) {
+    refX = selAnchor.x;
+    refY = selAnchor.y;
+  }
+  let anchorRect = lastSelRect, anchorDist = Infinity;
+  for (const rc of selRects) {
+    const d = rectPointDist(refX, refY, rc.left, rc.top, rc.width, rc.height);
+    if (d < anchorDist) { anchorDist = d; anchorRect = rc; }
+  }
+
+  const candidates = collectSelCandidates({
+    s, r, anchorRect, lastSelRect, refX, refY, hw, hh, measureStack,
+    col: $("#blocks").getBoundingClientRect(), padEdge, safeTop, safeBot,
+  });
+
+  // Pick the closest non-covering placement (keeping the same side while scrolling so it never jitters)
+  let pick = (isScroll && selPlace && candidates.find((c) => c.mode === selPlace)) || null;
+  if (!pick && candidates.length) {
+    pick = candidates.reduce((best, c) => (c.dist < best.dist ? c : best));
+  }
+  if (!pick) {
+    // Narrow viewport fallback when neither paragraph gaps nor margins have room
+    let top = r.top - hh - 8, py = 4;
+    if (top < safeTop) { top = r.bottom + 8; py = -4; }
+    pick = { mode: "over", x: clamp(r.left + r.width / 2 - hw / 2, padEdge, innerWidth - hw - padEdge), y: top, stack: false, over: true, px: 0, py };
+  }
+
+  selPlace = pick.mode;
+  const offscreen = r.bottom < safeTop || r.top > safeBot;
+  selPop.dataset.place = pick.mode;
+  selPop.classList.toggle("stack", !!pick.stack);
+  selPop.classList.toggle("over", !!pick.over);
+  selPop.classList.toggle("offscreen", offscreen);
+  if (wasHidden) {
+    selShownAt = performance.now();
+    selLocked = false;
+    selGlide.classList.remove("on");
+    selPop.style.setProperty("--pop-o", "1");
+    selPop.style.setProperty("--pop-s", "1");
+    selPop.style.setProperty("--pop-x", pick.px + "px");
+    selPop.style.setProperty("--pop-y", pick.py + "px");
+  }
+  selPop.style.left = Math.round(pick.x) + "px";
+  selPop.style.top = Math.round(pick.y) + "px";
+}
+const hideSelPop = () => {
+  selPop.hidden = true;
+  selPop.classList.remove("offscreen");
+  selGlide.classList.remove("on");
+  clearSelPreview();
+  selPlace = null;
+  selAnchor = null;
+  selLocked = false;
+};
+
+document.addEventListener("mouseup", (e) => {
+  if (e.target instanceof Node && selPop.contains(e.target)) return;
+  selAnchor = { x: e.clientX, y: e.clientY };
+  setTimeout(() => showSelPop(false), 0);
+});
+window.addEventListener("pointermove", (e) => {
+  if (!selPop.hidden && e.pointerType !== "touch") updateSelProximity(e.clientX, e.clientY);
+}, { passive: true });
 const selHighlight = window.Highlight && CSS.highlights ? new Highlight() : null; // painted in place of the native selection (style.css)
 if (selHighlight) CSS.highlights.set("sel", selHighlight);
 document.addEventListener("selectionchange", () => {
@@ -2254,18 +2547,37 @@ document.addEventListener("selectionchange", () => {
   if (selHighlight && s.rangeCount && !s.isCollapsed) selHighlight.add(s.getRangeAt(0).cloneRange());
   if (s.isCollapsed) { hideSelPop(); if (!pressing) catchUp(); }
 });
-$("#stage").addEventListener("scroll", () => selPop.hidden || showSelPop(), { passive: true }); // follow the text
+$("#stage").addEventListener("scroll", () => selPop.hidden || showSelPop(true), { passive: true }); // follow the text
+selPop.addEventListener("pointerover", (e) => {
+  const btn = e.target instanceof Element ? e.target.closest("button") : null;
+  if (!btn) return;
+  moveSelGlide(btn);
+  if (btn.dataset.act === "mark") previewBookmarkSelection();
+  else {
+    clearSelPreview();
+    if (btn.dataset.act === "copy") document.body.classList.add("sel-copy-hover");
+  }
+});
+selPop.addEventListener("pointerleave", () => {
+  moveSelGlide(null);
+  clearSelPreview();
+});
 selPop.addEventListener("mousedown", (e) => e.preventDefault()); // keep the selection
 selPop.addEventListener("click", async (e) => {
   e.stopPropagation();
   const btn = e.target.closest("button");
   const s = selectedWords();
   if (!btn || !s) return;
+  clearSelPreview();
   try {
     if (btn.dataset.act === "copy") await navigator.clipboard.writeText(getSelection().toString());
     else await addBookmark(s.b, s.w, s.text);
   } catch (err) { btn.textContent = "Failed"; return; }
+  selLocked = true;
+  selPop.style.setProperty("--pop-o", "1");
+  selPop.style.setProperty("--pop-s", "1");
   btn.textContent = btn.dataset.act === "copy" ? "Copied" : "Bookmarked";
+  moveSelGlide(btn);
   setTimeout(() => { hideSelPop(); getSelection().removeAllRanges(); }, 650);
 });
 document.addEventListener("click", (e) => { if (!e.target.closest("#outline")) closeOutline(); });
@@ -2428,6 +2740,7 @@ window.addEventListener("resize", () => {
   centerView(true);
   markBookmarks();
   refreshScout(true);
+  if (!selPop.hidden) showSelPop(true);
 });
 
 /* ------------------------------------------------------------------ routing */
