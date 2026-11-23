@@ -40,7 +40,9 @@ after that everything runs offline.
 **On Windows:** download `Steady-Windows.zip` from the latest release, unzip it anywhere and
 double-click `Steady.bat` (if Windows SmartScreen warns, choose **More info › Run anyway**). The
 first start installs uv and the packages by itself and adds Steady to the Start menu, so from then
-on you can open it from Start search or Raycast like any other app (its window starts minimised). To bring your library, voices and bookmarks,
+on you can open it from Start search or Raycast like any other app (its window starts minimised).
+When a new version is out, an **Update** button appears at the top right of the library page: click
+it and Steady updates and restarts itself, keeping your library. To bring your library, voices and bookmarks,
 copy the `data` folder from your Mac into the unzipped folder. Keep its window open while you read; close it to stop. For OCR, install Tesseract
 with `winget install UB-Mannheim.TesseractOCR` (tick the extra languages you need in the installer).
 

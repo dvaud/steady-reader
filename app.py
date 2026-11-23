@@ -169,6 +169,113 @@ def quit_app():
     return jsonify(ok=True)
 
 
+# ---- updates (Windows installs from the release zip; Steady.bat restarts on exit code 3)
+
+REPO = "dvaud/steady-reader"
+ASSET = "Steady-Windows.zip"
+RESTART_CODE = 3
+KEEP = {"data", ".git", ".update"}  # never touched by an update (nor anything starting with .venv)
+update_state = {"checked": 0.0, "latest": None, "url": None, "busy": False}
+
+
+def version_of(tag: str | None) -> tuple[int, ...]:
+    return tuple(int(n) for n in re.findall(r"\d+", tag or "")[:3])
+
+
+def current_version() -> str:
+    m = re.search(r'^version\s*=\s*"([^"]+)"', (ROOT / "pyproject.toml").read_text("utf8"), re.M)
+    return m.group(1) if m else "0"
+
+
+def can_update() -> bool:
+    """Only installs started by Steady.bat (which restarts Steady) and not a git checkout."""
+    return os.environ.get("STEADY_LAUNCHER") == "windows" and not (ROOT / ".git").exists()
+
+
+def latest_release(force: bool = False):
+    """(tag, zip url) of the newest release, checked at most once an hour."""
+    import urllib.request
+    if force or time.time() - update_state["checked"] > 3600:
+        req = urllib.request.Request(f"https://api.github.com/repos/{REPO}/releases/latest",
+                                     headers={"Accept": "application/vnd.github+json", "User-Agent": "Steady"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            rel = json.load(r)
+        url = next((a["browser_download_url"] for a in rel.get("assets", []) if a.get("name") == ASSET), None)
+        update_state.update(checked=time.time(), latest=rel.get("tag_name"), url=url)
+    return update_state["latest"], update_state["url"]
+
+
+@app.get("/api/update")
+def update_check():
+    current = current_version()
+    info = {"current": current, "latest": None, "available": False, "can_update": can_update()}
+    if not info["can_update"]:
+        return jsonify(info)
+    try:
+        tag, url = latest_release(force=request.args.get("force") == "1")
+    except Exception as e:
+        return jsonify(info | {"error": f"Couldn't check for updates: {e}"})
+    info["latest"] = (tag or "").lstrip("v") or None
+    info["available"] = bool(url) and version_of(tag) > version_of(current)
+    return jsonify(info)
+
+
+def install_zip(zip_path: Path):
+    """Copy the release's files over this folder. data/ and the Python environment stay as they are."""
+    import shutil
+    import zipfile
+    with zipfile.ZipFile(zip_path) as z:
+        names = [n for n in z.namelist() if not n.endswith("/")]
+        if "Steady/app.py" not in names:
+            raise ValueError("The download isn't a Steady release.")
+        for n in names:
+            rel = Path(n).relative_to("Steady") if n.startswith("Steady/") else None
+            if rel is None or ".." in rel.parts or rel.is_absolute() or not rel.parts:
+                raise ValueError(f"Unexpected file in the download: {n}")
+            if rel.parts[0] in KEEP or rel.parts[0].startswith(".venv"):
+                continue
+            dest = ROOT / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            tmp = dest.with_name(dest.name + ".new")
+            with z.open(n) as src, open(tmp, "wb") as out:
+                shutil.copyfileobj(src, out)
+            tmp.replace(dest)
+
+
+@app.post("/api/update")
+def update_apply():
+    import urllib.request
+    if not can_update():
+        return jsonify(error="This copy of Steady can't update itself."), 400
+    if update_state["busy"]:
+        return jsonify(error="Already updating."), 409
+    update_state["busy"] = True
+    try:
+        tag, url = latest_release(force=True)
+        if not url or version_of(tag) <= version_of(current_version()):
+            return jsonify(error="Steady is already up to date."), 400
+        work = ROOT / ".update"
+        work.mkdir(exist_ok=True)
+        zip_path = work / ASSET
+        req = urllib.request.Request(url, headers={"User-Agent": "Steady"})
+        with urllib.request.urlopen(req, timeout=120) as r, open(zip_path, "wb") as f:
+            while chunk := r.read(1 << 16):
+                f.write(chunk)
+        with save_lock:
+            install_zip(zip_path)
+        zip_path.unlink(missing_ok=True)
+    except Exception as e:
+        update_state["busy"] = False
+        return jsonify(error=f"Update failed: {e}"), 500
+
+    def restart():
+        with save_lock:
+            print(f"  Updated to {tag}: restarting.", flush=True)
+            os._exit(RESTART_CODE)
+    threading.Timer(0.5, restart).start()
+    return jsonify(ok=True, version=(tag or "").lstrip("v"))
+
+
 # Steady's own window (the Safari web app) can't be sent a link, so Steady.app leaves the
 # page to show here and the window picks it up when it comes to the front.
 shown = {"hash": None, "at": 0.0}

@@ -2477,6 +2477,49 @@ $("#quit").addEventListener("click", async (e) => {
   libStatus("Steady has stopped. You can close this window; open the Steady app to read again.");
 });
 
+// Update (Windows installs only): shown when a newer release exists. One click downloads it,
+// installs it over the app (data stays), and Steady.bat restarts Steady; then this page reloads.
+async function checkUpdate() {
+  try {
+    const info = await (await fetch("/api/update")).json();
+    const btn = $("#update");
+    if (!info.available) { btn.hidden = true; return; }
+    btn.textContent = `Update to ${info.latest}`;
+    btn.title = `You have Steady ${info.current}. Click to update; your library stays as it is.`;
+    btn.hidden = false;
+  } catch { /* offline: try again later */ }
+}
+$("#update").addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  btn.textContent = "Updating…";
+  libStatus("Downloading the new version. Steady restarts by itself in a moment.");
+  let started;
+  try {
+    started = (await (await fetch("/api/ping")).json()).started;
+    await post("/api/update", {});
+  } catch (err) {
+    btn.disabled = false;
+    checkUpdate();
+    libStatus(err.message || "Update failed. Try again later.", "error");
+    return;
+  }
+  serverGone = true; // the restart below isn't "Steady has stopped"
+  const t0 = Date.now();
+  const wait = setInterval(async () => {
+    try {
+      const r = await (await fetch("/api/ping")).json();
+      if (r.started !== started) { clearInterval(wait); location.reload(); }
+    } catch { /* restarting */ }
+    if (Date.now() - t0 > 5 * 60000) {
+      clearInterval(wait);
+      libStatus("Steady didn't come back after the update. Open Steady from the Start menu.", "error");
+    }
+  }, 1500);
+});
+checkUpdate();
+setInterval(checkUpdate, 6 * 3600000);
+
 applyLook();
 loadPron().catch(() => {});
 loadVoices().catch(() => {}).finally(() => { route(); claimShown(); });

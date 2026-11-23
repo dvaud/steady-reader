@@ -25,5 +25,17 @@ echo Starting Steady. The first start downloads Python and its packages, a few m
 
 rem Keep the Windows environment apart from the Mac .venv, in case the folder is synced both ways.
 set "UV_PROJECT_ENVIRONMENT=.venv-windows"
-uv run app.py
-pause
+rem Lets Steady offer its Update button: after updating it exits with code 3 and this restarts it.
+set "STEADY_LAUNCHER=windows"
+
+rem One block, read whole before it runs, so an update can safely replace this file meanwhile.
+(
+  uv run app.py
+  if errorlevel 3 if not errorlevel 4 (
+    set "NO_BROWSER=1"
+    start "Steady" /min "%~f0"
+    exit /b 0
+  )
+  if errorlevel 1 pause
+  exit /b
+)
