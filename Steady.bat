@@ -2,6 +2,9 @@
 rem Double-click to start Steady on Windows. Keep this window open while you read; close it to stop.
 cd /d "%~dp0"
 
+rem Put Steady in the Start menu (so Start search and Raycast find it). Refreshed each start, in case the folder moved.
+powershell -NoProfile -ExecutionPolicy ByPass -c "$l = Join-Path ([Environment]::GetFolderPath('Programs')) 'Steady.lnk'; $s = (New-Object -ComObject WScript.Shell).CreateShortcut($l); $s.TargetPath = '%~f0'; $s.WorkingDirectory = '%~dp0'; $s.IconLocation = '%~dp0static\steady.ico'; $s.WindowStyle = 7; $s.Description = 'Steady reader'; $s.Save()" >nul 2>nul
+
 rem Already running? Just open it.
 curl -s -o nul --max-time 1 http://localhost:41737/api/voices && (start "" http://localhost:41737 & exit /b 0)
 
