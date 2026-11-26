@@ -2498,7 +2498,10 @@ function showSelPop(isScroll = false) {
   // Pick the closest non-covering placement (keeping the same side while scrolling so it never jitters)
   let pick = (isScroll && selPlace && candidates.find((c) => c.mode === selPlace)) || null;
   if (!pick && candidates.length) {
-    pick = candidates.reduce((best, c) => (c.dist < best.dist ? c : best));
+    // If the pointer was already heading somewhere when you let go, take the closest spot along that
+    // heading (within ~40°), even if another spot is nearer overall
+    const aimed = !isScroll && selAim && selAnchor ? candidates.filter((c) => aimCos(c) >= 0.75) : [];
+    pick = (aimed.length ? aimed : candidates).reduce((best, c) => (c.dist < best.dist ? c : best));
   }
   if (!pick) {
     // Narrow viewport fallback when neither paragraph gaps nor margins have room
@@ -2532,13 +2535,43 @@ const hideSelPop = () => {
   clearSelPreview();
   selPlace = null;
   selAnchor = null;
+  selAim = null;
+  stopAimWatch?.();
   selLocked = false;
 };
 
+/* The hand rarely stops dead on letting go. Watch the pointer for a moment too short to notice, and if
+   it's clearly heading somewhere (say, out to the margin), put the buttons in its path. */
+let selAim = null;     // {dx, dy}: the pointer's heading just after the selection finished
+let stopAimWatch = null;
+const aimCos = (c) => {
+  const vx = c.x + c.w / 2 - selAnchor.x, vy = c.y + c.h / 2 - selAnchor.y;
+  const len = Math.hypot(vx, vy) * Math.hypot(selAim.dx, selAim.dy);
+  return len ? (vx * selAim.dx + vy * selAim.dy) / len : 0;
+};
+function watchAim(x0, y0) {
+  stopAimWatch?.();
+  let dx = 0, dy = 0;
+  const finish = () => {
+    stopAimWatch();
+    selAim = Math.hypot(dx, dy) >= 8 ? { dx, dy } : null; // a few pixels of wobble isn't a heading
+    showSelPop(false);
+  };
+  const move = (e) => {
+    dx = e.clientX - x0; dy = e.clientY - y0;
+    if (Math.hypot(dx, dy) >= 24) finish(); // heading is clear already, don't wait out the timer
+  };
+  const timer = setTimeout(finish, 90);
+  window.addEventListener("pointermove", move, { passive: true });
+  stopAimWatch = () => { clearTimeout(timer); window.removeEventListener("pointermove", move); stopAimWatch = null; };
+}
+document.addEventListener("mousedown", () => stopAimWatch?.()); // a new press, not a follow-through
 document.addEventListener("mouseup", (e) => {
   if (e.target instanceof Node && selPop.contains(e.target)) return;
+  stopAimWatch?.();
   selAnchor = { x: e.clientX, y: e.clientY };
-  setTimeout(() => showSelPop(false), 0);
+  selAim = null;
+  setTimeout(() => (hasSelection() ? watchAim(e.clientX, e.clientY) : showSelPop(false)), 0);
 });
 window.addEventListener("pointermove", (e) => {
   if (!selPop.hidden && e.pointerType !== "touch") updateSelProximity(e.clientX, e.clientY);
